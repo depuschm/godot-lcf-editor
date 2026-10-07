@@ -16,6 +16,8 @@
 
 namespace lcf::rpg {
 class Database;
+class Event;
+class EventPage;
 class Map;
 class TreeMap;
 } // namespace lcf::rpg
@@ -77,6 +79,9 @@ public:
 	// "ShowMessage", "CallCommonEvent", ... for an event command code; empty if unknown.
 	static String get_event_command_name(int code);
 
+	// Every event command code liblcf knows, in ascending order.
+	static PackedInt32Array get_event_command_codes();
+
 	// --- editing ---------------------------------------------------------------
 
 	// Replaces one entry with edited XML (same format as get_database_entry_xml).
@@ -132,6 +137,50 @@ public:
 	Error export_map(int map_id, const String &path);
 	Dictionary check_map_round_trip(int map_id) const;
 
+	// --- events --------------------------------------------------------------------
+	// Map events are addressed by their ID (as in get_map().events), pages by their
+	// 0-based index. Every change marks the map as modified; save it with save_map().
+
+	// The whole event as liblcf XML (name, position, every page with its conditions,
+	// graphic, movement and commands). Empty if there is no such event.
+	String get_map_event_xml(int map_id, int event_id);
+
+	// Replaces the event with edited XML; the event keeps its ID. Nothing changes if
+	// the XML does not parse cleanly. Also the way to undo any event edit.
+	Error set_map_event_xml(int map_id, int event_id, const String &xml);
+
+	// Sets one field of an event from plain text; `path` as in set_database_field,
+	// below the <Event> element of get_map_event_xml.
+	Error set_map_event_field(int map_id, int event_id, const PackedInt32Array &path, const String &value);
+
+	// Creates an event with one new page (see insert_map_event_page) at (x, y), named like RPG Maker does
+	// ("EV0001"), with the lowest free ID. Returns the ID, or -1 on error.
+	int add_map_event(int map_id, int x, int y);
+
+	// Adds an event from XML (e.g. to undo a deletion or paste a copy). It keeps the
+	// ID in the XML if that is free, otherwise gets the lowest free ID; x and y are
+	// taken from the XML. Returns the ID, or -1 on error.
+	int insert_map_event_xml(int map_id, const String &xml);
+
+	Error delete_map_event(int map_id, int event_id);
+
+	// Inserts a page at `index` (0..page count): a copy of page `copy_from`, or a new
+	// page like RPG Maker creates it (stands still, same layer as the hero) when
+	// copy_from is -1. Page IDs are renumbered.
+	Error insert_map_event_page(int map_id, int event_id, int index, int copy_from = -1);
+	Error remove_map_event_page(int map_id, int event_id, int index);
+
+	// Event commands of a page: [{ code, indent, string, parameters: PackedInt32Array }].
+	// The list ends with the last real command; the terminating zero entry RPG Maker
+	// writes after it is added when saving.
+	Array get_map_event_commands(int map_id, int event_id, int page);
+	Error set_map_event_commands(int map_id, int event_id, int page, const Array &commands);
+
+	// The same for common events (index as in get_database_entries("commonevents")).
+	// Changing them marks the database as modified.
+	Array get_common_event_commands(int index) const;
+	Error set_common_event_commands(int index, const Array &commands);
+
 protected:
 	static void _bind_methods();
 
@@ -141,6 +190,10 @@ private:
 	std::filesystem::path map_path(int map_id) const;
 	std::unique_ptr<lcf::rpg::Map> load_map(int map_id);
 	lcf::rpg::Map *map_ref(int map_id);
+	// The event with that ID on a loaded map, or nullptr (with last_error set).
+	lcf::rpg::Event *event_ref(int map_id, int event_id);
+	// The page of an event, or nullptr (with last_error set).
+	lcf::rpg::EventPage *page_ref(int map_id, int event_id, int page);
 	std::unique_ptr<lcf::rpg::Database> read_database(const std::filesystem::path &path) const;
 	std::unique_ptr<lcf::rpg::Map> read_map(const std::filesystem::path &path) const;
 	Error safe_save(const std::filesystem::path &target, const String &backup_dir,

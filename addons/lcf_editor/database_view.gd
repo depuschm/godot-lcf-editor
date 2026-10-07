@@ -8,32 +8,22 @@ extends HSplitContainer
 ## Emitted when the database gets unsaved changes or is saved/reverted.
 signal modified_changed(modified: bool)
 
-## Fields that point into another section, shown with the target's name.
-const REFERENCES := {
-	"class_id": "classes", "skill_id": "skills", "item_id": "items", "state_id": "states",
-	"animation_id": "animations", "enemy_id": "enemies", "troop_id": "troops",
-	"terrain_id": "terrains", "attribute_id": "attributes", "chipset_id": "chipsets",
-	"actor_id": "actors", "switch_id": "switches", "variable_id": "variables",
-	"weapon_id": "items", "shield_id": "items", "armor_id": "items", "helmet_id": "items",
-	"accessory_id": "items", "unarmed_animation": "animations",
-	"battler_animation": "battleranimations",
-}
-const LONG_LIST := 12
+const FieldTree := preload("res://addons/lcf_editor/field_tree.gd")
+const CommandList := preload("res://addons/lcf_editor/command_list.gd")
 
 var project: RefCounted  # LcfProject
 var sections: Array = []
-var names_cache := {}  # section key -> { id: name }
 
 var section_list: ItemList
 var filter_edit: LineEdit
 var entry_list: ItemList
-var fields: Tree
+var fields: FieldTree
+var commands: CommandList
 var header: Label
 var status: Label
 var warning: Label
 var save_button: Button
 var revert_button: Button
-var edit_dialog: ConfirmationDialog
 var confirm_dialog: ConfirmationDialog
 
 var current_section := ""
@@ -41,8 +31,6 @@ var current_entries: Array = []
 var current_index := -1
 var round_trip: Dictionary = {}
 var normalising_confirmed := false
-var editing_item: TreeItem
-var editor_control: Control
 
 
 func _ready() -> void:
@@ -96,21 +84,21 @@ func _ready() -> void:
 	warning.add_theme_color_override("font_color", Color(1.0, 0.8, 0.4))
 	warning.visible = false
 	fields_box.add_child(warning)
-	fields = Tree.new()
-	fields.columns = 2
-	fields.column_titles_visible = true
-	fields.set_column_title(0, "Field")
-	fields.set_column_title(1, "Value")
-	fields.set_column_expand_ratio(0, 2)
-	fields.set_column_expand_ratio(1, 3)
-	fields.hide_root = true
-	fields.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	fields.item_activated.connect(_on_field_activated)
-	fields_box.add_child(fields)
-
-	edit_dialog = ConfirmationDialog.new()
-	edit_dialog.confirmed.connect(_on_edit_confirmed)
-	add_child(edit_dialog)
+	fields = FieldTree.new()
+	fields.setter = func(path: PackedInt32Array, value: String) -> String:
+		if project.set_database_field(current_section, current_index, path, value) != OK:
+			return project.get_last_error()
+		return ""
+	fields.field_changed.connect(_on_field_changed)
+	fields.edit_failed.connect(func(message: String) -> void: _update_status(message, true))
+	var split := VSplitContainer.new()
+	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	fields_box.add_child(split)
+	split.add_child(fields)
+	commands = CommandList.new()
+	commands.visible = false
+	commands.commands_changed.connect(_on_commands_changed)
+	split.add_child(commands)
 	confirm_dialog = ConfirmationDialog.new()
 	confirm_dialog.dialog_autowrap = true
 	confirm_dialog.min_size = Vector2i(480, 0)
@@ -119,7 +107,9 @@ func _ready() -> void:
 
 func set_project(p_project: RefCounted) -> void:
 	project = p_project
-	names_cache.clear()
+	fields.project = project
+	commands.project = project
+	fields.invalidate_names()
 	normalising_confirmed = false
 	round_trip = project.check_round_trip() if project and project.is_loaded() else {}
 	if round_trip.is_empty() or round_trip.get("identical", true):
@@ -138,6 +128,7 @@ func set_project(p_project: RefCounted) -> void:
 		section_list.add_item(label)
 	entry_list.clear()
 	fields.clear()
+	commands.visible = false
 	header.text = "Select a section." if sections else "Open a project in the LCF Project dock."
 	if sections:
 		section_list.select(0)
@@ -154,6 +145,7 @@ func _on_section_selected(index: int) -> void:
 		_on_entry_selected(0)
 	else:
 		fields.clear()
+		commands.visible = false
 		header.text = "%s: no entries" % sections[index].label
 
 
@@ -170,237 +162,34 @@ func _fill_entries() -> void:
 func _on_entry_selected(row: int) -> void:
 	current_index = entry_list.get_item_metadata(row)
 	var xml: String = project.get_database_entry_xml(current_section, current_index)
-	var root := _parse(xml)
-	fields.clear()
-	var tree_root := fields.create_item()
+	var root := FieldTree.parse(xml)
+	var is_common := current_section == "commonevents"
+	fields.show_node(root, PackedInt32Array(), ["event_commands"] if is_common else [])
+	commands.visible = is_common
+	if is_common:
+		commands.set_commands(project.get_common_event_commands(current_index))
 	header.text = entry_list.get_item_text(row)
 	if root.is_empty():
 		header.text += "  (could not read entry)"
-		return
-	for i in root.children.size():
-		_add_node(tree_root, root.children[i], PackedInt32Array([i]))
 
 
-# --- XML to nodes: { tag, id, text, children } ----------------------------------
-
+## Parses liblcf XML into { tag, id, text, children } (kept for tests and tools).
 func _parse(xml: String) -> Dictionary:
-	var parser := XMLParser.new()
-	if parser.open_buffer(xml.to_utf8_buffer()) != OK:
-		return {}
-	var stack: Array[Dictionary] = []
-	var root := {}
-	while parser.read() == OK:
-		match parser.get_node_type():
-			XMLParser.NODE_ELEMENT:
-				var node := {
-					"tag": parser.get_node_name(),
-					"id": parser.get_named_attribute_value_safe("id"),
-					"text": "",
-					"children": [],
-				}
-				if stack.is_empty():
-					root = node
-				else:
-					stack.back().children.append(node)
-				if not parser.is_empty():
-					stack.push_back(node)
-			XMLParser.NODE_ELEMENT_END:
-				if not stack.is_empty():
-					stack.pop_back()
-			XMLParser.NODE_TEXT:
-				if not stack.is_empty():
-					var text := parser.get_node_data()
-					if text.strip_edges() != "":
-						stack.back().text += text.xml_unescape()
-	return root
+	return FieldTree.parse(xml)
 
 
-# --- nodes to tree rows -----------------------------------------------------------
-
-func _add_node(parent: TreeItem, node: Dictionary, path: PackedInt32Array) -> void:
-	var item := fields.create_item(parent)
-	var children: Array = node.children
-	if children.is_empty():
-		item.set_text(0, node.tag)
-		item.set_tooltip_text(0, node.tag)
-		item.set_metadata(0, { "path": path, "tag": node.tag, "text": node.text })
-		_show_value(item)
-		return
-
-	# A field holding exactly one structure (e.g. parameters → Parameters): skip a level.
-	if children.size() == 1 and children[0].id == "" and children[0].tag[0] == children[0].tag[0].to_upper():
-		item.set_text(0, node.tag)
-		for i in children[0].children.size():
-			_add_node(item, children[0].children[i], path + PackedInt32Array([0, i]))
-		item.collapsed = children[0].children.size() > 8
-		return
-
-	if node.tag == "event_commands":
-		item.set_text(0, "event_commands")
-		item.set_text(1, "%d commands" % children.size())
-		for command: Dictionary in children:
-			_add_command(item, command)
-		return
-
-	if node.tag[0] == node.tag[0].to_upper():  # a list element such as <Learning id="0001">
-		item.set_text(0, "%s %s" % [node.tag, node.id] if node.id != "" else node.tag)
-		item.set_text(1, _summary(node))
-	else:
-		item.set_text(0, node.tag)
-		item.set_text(1, "%d entries" % children.size())
-		item.collapsed = children.size() > 1
-	for i in children.size():
-		_add_node(item, children[i], path + PackedInt32Array([i]))
-
-
-func _add_command(parent: TreeItem, command: Dictionary) -> void:
-	var values := {}
-	for f: Dictionary in command.children:
-		values[f.tag] = f.text
-	var code := int(values.get("code", "0"))
-	var command_name: String = project.get_event_command_name(code)
-	if command_name == "":
-		command_name = "Command %d" % code
-	var item := fields.create_item(parent)
-	item.set_text(0, "  ".repeat(int(values.get("indent", "0"))) + command_name)
-	item.set_tooltip_text(0, command_name)
-	var detail: String = values.get("string", "")
-	var params: String = values.get("parameters", "").strip_edges()
-	if params != "":
-		detail = ("“%s”  " % detail if detail != "" else "") + "[" + params.replace(" ", ", ") + "]"
-	elif detail != "":
-		detail = "“%s”" % detail
-	item.set_text(1, detail)
-	item.set_tooltip_text(1, detail)
-
-
-func _summary(node: Dictionary) -> String:
-	for child: Dictionary in node.children:
-		if child.tag == "name" and child.text != "":
-			return child.text
-	return ""
-
-
-func _format_value(tag: String, text: String) -> String:
-	if text == "T":
-		return "Yes"
-	if text == "F":
-		return "No"
-	if text == "":
-		return "—"
-	if " " in text and text.replace(" ", "").replace("-", "").is_valid_int():
-		var numbers := text.split(" ")
-		if numbers.size() > LONG_LIST:
-			return "%d values: %s, …" % [numbers.size(), ", ".join(numbers.slice(0, 8))]
-		return ", ".join(numbers)
-	if text.is_valid_int() and REFERENCES.has(tag) and int(text) > 0:
-		var target := _name_of(REFERENCES[tag], int(text))
-		if target != "":
-			return "%s · %s" % [text, target]
-	return text
-
-
-func _name_of(section: String, id: int) -> String:
-	if not names_cache.has(section):
-		var names := {}
-		for entry: Dictionary in project.get_database_entries(section):
-			names[entry.id] = entry.name
-		names_cache[section] = names
-	return names_cache[section].get(id, "")
-
-
-# --- editing ----------------------------------------------------------------------
-
-func _show_value(item: TreeItem) -> void:
-	var meta: Dictionary = item.get_metadata(0)
-	item.set_text(1, _format_value(meta.tag, meta.text))
-	item.set_tooltip_text(1, meta.text + "\n(double-click to edit)")
-
-
-func _kind(text: String) -> String:
-	if text == "T" or text == "F":
-		return "bool"
-	if text.is_valid_int():
-		return "int"
-	if " " in text and text.replace(" ", "").replace("-", "").is_valid_int():
-		return "list"
-	return "text"
-
-
-func _on_field_activated() -> void:
-	var item := fields.get_selected()
-	if item == null or not (item.get_metadata(0) is Dictionary):
-		return
-	editing_item = item
-	var meta: Dictionary = item.get_metadata(0)
-	if editor_control:
-		editor_control.queue_free()
-	var kind := _kind(meta.text)
-	match kind:
-		"bool":
-			var box := CheckBox.new()
-			box.text = "Yes"
-			box.button_pressed = meta.text == "T"
-			editor_control = box
-		"int":
-			var spin := SpinBox.new()
-			spin.allow_greater = true
-			spin.allow_lesser = true
-			spin.rounded = true
-			spin.value = int(meta.text)
-			editor_control = spin
-		_:
-			if "\n" in meta.text:
-				var area := TextEdit.new()
-				area.text = meta.text
-				area.custom_minimum_size = Vector2(420, 120)
-				editor_control = area
-			else:
-				var line := LineEdit.new()
-				line.text = meta.text
-				line.custom_minimum_size = Vector2(320, 0)
-				line.text_submitted.connect(func(_t: String) -> void:
-					edit_dialog.hide()
-					_on_edit_confirmed())
-				editor_control = line
-	edit_dialog.title = "Edit %s" % meta.tag
-	edit_dialog.add_child(editor_control)
-	edit_dialog.popup_centered()
-	if editor_control is LineEdit:
-		editor_control.grab_focus()
-		editor_control.select_all()
-
-
-func _on_edit_confirmed() -> void:
-	if editing_item == null or editor_control == null:
-		return
-	var meta: Dictionary = editing_item.get_metadata(0)
-	var value: String
-	if editor_control is CheckBox:
-		value = "T" if editor_control.button_pressed else "F"
-	elif editor_control is SpinBox:
-		value = str(int(editor_control.value))
-	else:
-		value = editor_control.text
-		if _kind(meta.text) == "list":
-			var parts := PackedStringArray()
-			for part in value.replace(",", " ").split(" ", false):
-				if not part.is_valid_int():
-					_update_status("“%s” is not a whole number" % part, true)
-					return
-				parts.append(str(int(part)))
-			value = " ".join(parts)
-	if value == meta.text:
-		return
-	if project.set_database_field(current_section, current_index, meta.path, value) != OK:
-		_update_status("Could not set %s: %s" % [meta.tag, project.get_last_error()], true)
-		return
-	meta.text = value
-	editing_item.set_metadata(0, meta)
-	_show_value(editing_item)
-	if meta.path.size() == 1 and meta.tag == "name":
+func _on_field_changed(path: PackedInt32Array, tag: String, value: String) -> void:
+	if path.size() == 1 and tag == "name":
 		_refresh_entry_name(value)
-	names_cache.erase(current_section)
+	fields.invalidate_names(current_section)
+	_update_status("")
+
+
+func _on_commands_changed(list: Array, _action: String) -> void:
+	if project.set_common_event_commands(current_index, list) != OK:
+		_update_status(project.get_last_error(), true)
+		return
+	commands.set_commands(project.get_common_event_commands(current_index))
 	_update_status("")
 
 

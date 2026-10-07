@@ -49,6 +49,7 @@ add_library(lcf_editor SHARED
     src/lcf_project.cpp
     src/lcf_chipset.cpp
     src/database_sections.cpp
+    src/lcf_xml.cpp
 )
 target_link_libraries(lcf_editor PRIVATE godot-cpp lcf)
 

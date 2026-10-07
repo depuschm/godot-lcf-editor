@@ -4,7 +4,7 @@
 
 Godot editor for RPG Maker 2000/2003 projects (LCF format), built on [liblcf](https://github.com/EasyRPG/liblcf). Extensible through plugins, playtested with [EasyRPG Player](https://github.com/EasyRPG/Player).
 
-> **Status: early prototype.** The editor plugin opens an existing RPG Maker 2000/2003 project, lets you paint its maps and browse and edit its whole database inside Godot. Event editing comes next — see the [roadmap](#roadmap). Keep backups of your projects while trying it.
+> **Status: early prototype.** The editor plugin opens an existing RPG Maker 2000/2003 project, lets you paint its maps, edit its events and browse and edit its whole database inside Godot. Dialogs for individual event commands come next — see the [roadmap](#roadmap). Keep backups of your projects while trying it.
 
 ## Vision
 
@@ -31,9 +31,11 @@ The full vision, the existing landscape and the options considered are in [`docs
 - Shows the map tree, including areas, and basic facts per map.
 - Selecting a map opens it in the **LCF Editor** screen (next to 2D, 3D and Script), **Map** tab: lower and upper layer with the project's chipset, including ground autotiles, water with shores and deep-water edges, and event markers. Zoom with the mouse wheel, pan with the middle mouse button (or Space + drag); the status line shows the tile IDs under the cursor.
 - **Painting maps:** pick a tile in the palette (right of the map) and paint with **Pencil**, **Rectangle** or **Fill** on the lower or upper layer; right-click or **Pick** takes the tile under the cursor. Autotiles and water connect automatically: the painted tiles and their neighbours get the variants RPG Maker would choose, including shores and deep-water edges. Hold **Shift** to place the exact tile without autotiling. Every stroke can be undone with Godot's undo (Ctrl+Z).
+- **Events:** the **Events** layer button switches the map to event editing. Click an event to select it, drag it to move it, double-click it to open the **event editor**, or double-click an empty cell to create one (named and numbered like RPG Maker does). Right-click for New, Edit, Copy, Paste and Delete; Delete, Ctrl+C and Ctrl+V work too.
+- **Event editor:** name, pages as tabs (New page, Copy page, Delete page), every page setting (conditions, graphic, movement, trigger, layer, …) with readable choices such as “Action Button” or “Stay Still”, and the page's command list as RPG Maker shows it (“◆Show Message: …”). Commands can be inserted, edited and deleted; every command is editable as raw data (code, indent, text, parameters) with a searchable list of all commands, so nothing is out of reach. Every change can be undone with Ctrl+Z in the map.
 - **Saving maps** works like the database: **Save map** makes a backup, writes a temporary file, reads it back and compares it before replacing `Map####.lmu`; **Revert** drops unsaved changes, and Godot asks about unsaved maps when it closes.
 - The **Database** tab shows every section of the database (actors, classes, skills, items, enemies, troops, states, vocabulary, system, common events, switches, variables, …). Every field of the selected entry is listed, nested structures can be expanded, event commands appear by name with their indentation, and references such as `class_id` or `switch_id` show the name they point to. Fields come straight from liblcf's own description of the format, so new fields (including Maniacs and EasyRPG extensions) appear automatically.
-- **Editing the database:** double-click a field to change it (checkbox for yes/no, number box, text field). **Save** writes `RPG_RT.ldb`; **Revert** drops unsaved changes, and Godot warns about unsaved changes when it closes. Event commands are still read-only.
+- **Editing the database:** double-click a field to change it (checkbox for yes/no, number box, text field, list of named choices). **Save** writes `RPG_RT.ldb`; **Revert** drops unsaved changes, and Godot warns about unsaved changes when it closes. **Common events** get the same command list as map events.
 - **Safe saving:** before every save the current file is copied to a backup (the newest 20 are kept in Godot's user data folder, under `backups/`). The new database is written to a temporary file, read back and compared before it replaces the original. The save counter is increased like RPG Maker does.
 - **Byte-exact round trips:** databases saved by RPG Maker 2000 and 2003 (and PowerMode2003) are written back byte for byte when nothing was changed, and every entry passes through the editor without changing a byte (tested with [EasyRPG's TestGame](https://github.com/EasyRPG/TestGame), 760–890 entries per game). Databases from the Maniacs Patch or EasyRPG can contain empty or unknown fields that liblcf leaves out; the editor detects this when a project opens, shows a warning, and asks before saving.
 - Chipsets in PNG, BMP and RPG Maker's XYZ format, with palette colour 0 transparent as in RPG Maker.
@@ -49,15 +51,20 @@ if project.load("C:/Games/MyRpg") == OK:
         var tile: Image = chipset.render_tile(map.lower[0])
     for entry in project.get_database_entries("actors"):  # also "skills", "items", ...
         print(entry.id, ": ", entry.name)
+    for event in map.events:  # id, name, x, y, page_count
+        for command in project.get_map_event_commands(1, event.id, 0):  # code, indent, string, parameters
+            print(LcfProject.get_event_command_name(command.code), " ", command.string)
 ```
+
+![The Map tab on the Events layer with the chest in the demo's house selected, and the event editor open on it: name “Chest”, tabs for page 1 and 2, the page settings (Stay Still, Action Button, Same as Hero, …) and the command list with Play Sound, Show Message, Change Gold and Control Switches.](docs/images/editor-events.png)
 
 ![The Database tab with the demo's actor "Hero" selected: its fields on the right, the title just changed to "Knight of the Lake", "Unsaved changes" with Save and Revert buttons at the top, references such as class_id shown as "1 · Warrior", and the number editor open for final_level.](docs/images/editor-database.png)
 
 The autotile and water rules (`extension/src/tile_rules.h`) are our own implementation of the chipset format. Drawing was checked against EasyRPG Player's reference tables for every ground autotile, water combination and animation frame. Painting was checked against maps saved by the real RPG Maker editor (EasyRPG's TestGame): recomputing every autotile reproduces the stored variants on all regularly painted maps; the differences are in test rooms where variants were placed by hand on purpose. Painting only recomputes the painted tiles and their neighbours, so hand-placed variants elsewhere stay as they are.
 
-Untouched maps also save back byte for byte: all maps of TestGame-2003, -Maniacs and -EasyRPG and 77 of 78 maps of TestGame-2000 (the remaining one, and any other map where that is not the case, makes the editor ask before saving).
+Untouched maps also save back byte for byte: all maps of TestGame-2003, -Maniacs and -EasyRPG and 77 of 78 maps of TestGame-2000 (the remaining one, and any other map where that is not the case, makes the editor ask before saving). Events go through the same exact path: every event of every TestGame (3,355 events with 54,139 commands in TestGame-2000 alone) and every common event passes through the editor without changing a byte.
 
-**Not yet:** editing events and event commands, adding or removing database entries, map properties (size, chipset), RTP graphics (chipsets must be inside the project), tile animation.
+**Not yet:** dialogs for individual event commands (they are edited as raw data for now), event graphics on the map, move route editing, adding or removing database entries, map properties (size, chipset), RTP graphics (chipsets must be inside the project), tile animation.
 
 ## Repository layout
 
@@ -76,7 +83,7 @@ docs/                      Vision document and README images
 
 ## Download
 
-Every push is built and tested on **Windows** and **Linux** by [GitHub Actions](https://github.com/depuschm/godot-lcf-editor/actions/workflows/build.yml): the smoke test, the round-trip test on the demo and on EasyRPG's TestGame (2000, 2003, Maniacs), and a check that the Godot editor loads the plugin.
+Every push is built and tested on **Windows** and **Linux** by [GitHub Actions](https://github.com/depuschm/godot-lcf-editor/actions/workflows/build.yml): the smoke test, the round-trip test on the demo and on EasyRPG's TestGame (2000, 2003, Maniacs), the event editor test, and a check that the Godot editor loads the plugin.
 
 - **Releases:** ready-to-use addon zips with Windows and Linux binaries appear under [Releases](https://github.com/depuschm/godot-lcf-editor/releases) once a version is tagged.
 - **Latest build:** open the newest successful run on the [Actions page](https://github.com/depuschm/godot-lcf-editor/actions/workflows/build.yml) and download `lcf_editor-Windows` or `lcf_editor-Linux` (needs a GitHub login).
@@ -115,13 +122,21 @@ In a fresh checkout, run `godot --headless --path . --import` once first. That v
 
 ### Round-trip test
 
-Checks byte-exact saving of the database and every map, the edit path for every database entry, a real edit with backup and the save counter, and painting a small lake (shores, undo, map saving). It always works on a copy in Godot's user data folder, never on the project itself:
+Checks byte-exact saving of the database and every map, the edit path for every database entry, event and command list, a real edit with backup and the save counter, painting a small lake (shores, undo, map saving), and creating, editing, deleting and restoring an event. It always works on a copy in Godot's user data folder, never on the project itself:
 
 ```bash
 godot --headless --path . --script res://tests/test_roundtrip.gd -- /path/to/RPG/project
 ```
 
 Without a path it uses `demo/`.
+
+### Event editor test
+
+Drives the real map view, event editor and database view without a window, on a copy of `demo/`: creating, renaming, moving, copying and deleting events, page settings, pages and commands, the undo states, and common event commands.
+
+```bash
+godot --headless --path . --script res://tests/test_event_editor.gd
+```
 
 ### Rendering a map to PNG
 
@@ -149,7 +164,8 @@ cmake -S tools -B build-tools && cmake --build build-tools
 | M2b | Map painting with autotiles, undo and safe saving ✅ |
 | M3a | Database browser ✅ |
 | M3b | Database editing and safe saving (backups, byte-identical round trip) ✅ |
-| M4 | Event editor with data-driven command dialogs |
+| M4a | Event editor: events on the map, pages, page settings, command lists (raw editing), undo ✅ |
+| M4b | Data-driven dialogs for event commands, registered by plugins |
 | M5 | Plugin API for the editor |
 | M6 | Test Play with EasyRPG Player; runtime extension mechanism |
 | M7 | Showcase plugins: pixel-perfect movement, shader support |

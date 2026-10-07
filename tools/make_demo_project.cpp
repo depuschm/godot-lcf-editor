@@ -135,15 +135,34 @@ bool paint(rpg::Map &map, const std::vector<std::string> &grid, int floor) {
 	return true;
 }
 
-void add_event(rpg::Map &map, const char *name, int x, int y) {
+using Code = rpg::EventCommand::Code;
+
+rpg::EventCommand cmd(Code code, int indent, const char *text = "", std::initializer_list<int32_t> params = {}) {
+	rpg::EventCommand c;
+	c.code = int(code);
+	c.indent = indent;
+	c.string = DBString(text);
+	c.parameters = DBArray<int32_t>(params);
+	return c;
+}
+
+// Adds an event; `pages` holds each page's commands (at least one page).
+rpg::Event &add_event(rpg::Map &map, const char *name, int x, int y,
+		std::initializer_list<std::vector<rpg::EventCommand>> pages = { {} }) {
 	rpg::Event event;
 	event.ID = int(map.events.size()) + 1;
 	event.name = DBString(name);
 	event.x = x;
 	event.y = y;
-	event.pages.emplace_back();
-	event.pages.back().ID = 1;
+	for (const auto &commands : pages) {
+		event.pages.emplace_back();
+		event.pages.back().ID = int(event.pages.size());
+		event.pages.back().move_type = rpg::EventPage::MoveType_stationary;  // as RPG Maker's editor
+		event.pages.back().layer = rpg::EventPage::Layers_same;
+		event.pages.back().event_commands = commands;
+	}
 	map.events.push_back(std::move(event));
+	return map.events.back();
 }
 
 rpg::MapInfo map_info(int id, const char *name, int parent, int indentation, int type) {
@@ -258,30 +277,26 @@ int main(int argc, char **argv) {
 	chipset.chipset_name = DBString("Demo");
 	db.chipsets.push_back(chipset);
 
-	for (const char *name : { "Intro done", "Door open" }) named(db.switches, name);
+	for (const char *name : { "Intro done", "Door open", "Chest opened" }) named(db.switches, name);
 	for (const char *name : { "Steps", "Slimes defeated" }) named(db.variables, name);
 
+	// Structured like RPG Maker writes it: each block ends with an END line at the
+	// block's inner indent; the list itself ends without one (the file's terminator).
 	auto &common = named(db.commonevents, "Heal party");
-	auto command = [&](int code, int indent, const char *text, std::initializer_list<int32_t> params) {
-		rpg::EventCommand c;
-		c.code = code;
-		c.indent = indent;
-		c.string = DBString(text);
-		c.parameters = DBArray<int32_t>(params);
-		common.event_commands.push_back(std::move(c));
+	common.event_commands = {
+		cmd(Code::Comment, 0, "Called by the inn keeper"),
+		cmd(Code::ConditionalBranch, 0, "", { 0, 1, 0, 0, 0, 0 }),
+		cmd(Code::ShowMessage, 1, "Welcome back!"),
+		cmd(Code::END, 1),
+		cmd(Code::ElseBranch, 0),
+		cmd(Code::ShowMessage, 1, "Have a good rest."),
+		cmd(Code::ShowMessage_2, 1, "Your party feels refreshed."),
+		cmd(Code::END, 1),
+		cmd(Code::EndBranch, 0),
+		cmd(Code::FullHeal, 0, "", { 0, 0 }),
+		cmd(Code::PlaySound, 0, "Heal", { 100, 100, 50 }),
+		cmd(Code::ChangeGold, 0, "", { 1, 0, 10 }),  // the inn costs 10 G
 	};
-	using Code = rpg::EventCommand::Code;
-	command(int(Code::Comment), 0, "Called by the inn keeper", {});
-	command(int(Code::ConditionalBranch), 0, "", { 0, 1, 0, 0, 0, 0 });
-	command(int(Code::ShowMessage), 1, "Welcome back!", {});
-	command(int(Code::ElseBranch), 0, "", {});
-	command(int(Code::ShowMessage), 1, "Have a good rest.", {});
-	command(int(Code::ShowMessage_2), 1, "Your party feels refreshed.", {});
-	command(int(Code::EndBranch), 0, "", {});
-	command(int(Code::FullHeal), 0, "", { 0, 0 });
-	command(int(Code::PlaySound), 0, "Heal", { 100, 100, 50 });
-	command(int(Code::ChangeGold), 0, "", { 1, 0, 10 });
-	command(int(Code::END), 0, "", {});
 
 	db.terms.encounter = DBString(" appeared!");
 	db.terms.victory = DBString("Victory!");
@@ -318,15 +333,34 @@ int main(int argc, char **argv) {
 			std::fprintf(stderr, "Bad map grid: %s/%s\n", maps_dir.c_str(), spec.file);
 			return 1;
 		}
+		// Teleport: map, x, y, facing (0 = keep). ChangeGold: 0 = add, 0 = constant,
+		// amount. ControlSwitches: 0 = one switch, first, last, 0 = turn on.
 		if (spec.id == 1) {
-			add_event(map, "Sign", 11, 16);
+			add_event(map, "Sign", 11, 16, { {
+				cmd(Code::ShowMessage, 0, "Welcome to the LCF Editor demo!"),
+				cmd(Code::ShowMessage_2, 0, "Every map and event here was made with liblcf."),
+			} });
 		} else if (spec.id == 3) {
-			add_event(map, "Door A", 4, 5);
-			add_event(map, "Door B", 15, 5);
-			add_event(map, "Villager", 9, 10);
+			add_event(map, "Door A", 4, 5, { { cmd(Code::Teleport, 0, "", { 4, 7, 7, 0 }) } });
+			add_event(map, "Door B", 15, 5, { { cmd(Code::ShowMessage, 0, "The door is locked.") } });
+			add_event(map, "Villager", 9, 10, { {
+				cmd(Code::ShowMessage, 0, "Nice weather today."),
+				cmd(Code::CallCommonEvent, 0, "", { 0, 1, 0 }),
+			} });
 		} else {
-			add_event(map, "Chest", 13, 3);
-			add_event(map, "Exit", 7, 8);
+			auto &chest = add_event(map, "Chest", 13, 3, {
+				{
+					cmd(Code::PlaySound, 0, "Chest", { 100, 100, 50 }),
+					cmd(Code::ShowMessage, 0, "You found 50 G!"),
+					cmd(Code::ChangeGold, 0, "", { 0, 0, 50 }),
+					cmd(Code::ControlSwitches, 0, "", { 0, 3, 3, 0 }),
+				},
+				{ cmd(Code::ShowMessage, 0, "The chest is empty.") },
+			});
+			// Page 2 applies once switch 3 "Chest opened" is on.
+			chest.pages[1].condition.flags.switch_a = true;
+			chest.pages[1].condition.switch_a_id = 3;
+			add_event(map, "Exit", 7, 8, { { cmd(Code::Teleport, 0, "", { 3, 4, 6, 0 }) } });
 		}
 		char name[32];
 		std::snprintf(name, sizeof(name), "/Map%04d.lmu", spec.id);

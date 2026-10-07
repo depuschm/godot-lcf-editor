@@ -78,6 +78,11 @@ jobs:
           "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_roundtrip.gd | tee roundtrip.log
           echo "::notice title=Round trip demo (${{ matrix.name }})::$(grep -c '  ok ' roundtrip.log) checks ok, result: $(tail -n 1 roundtrip.log)"
 
+      - name: Event editor test
+        run: |
+          "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_event_editor.gd | tee events.log
+          echo "::notice title=Event editor (${{ matrix.name }})::$(grep -c '  ok ' events.log) checks ok, result: $(tail -n 1 events.log)"
+
       - name: Round-trip test (EasyRPG TestGame)
         run: |
           git clone --depth 1 https://github.com/EasyRPG/TestGame ../TestGame

@@ -5,14 +5,19 @@ extends VBoxContainer
 ##
 ## Left mouse paints with the current tool, right click picks the tile under the
 ## cursor, middle mouse (or Space + left mouse) pans, the wheel zooms. Holding Shift
-## places the exact tile without autotiling.
+## places the exact tile without autotiling. On the Events layer, clicks select, create,
+## move and open events instead.
 
 const TILE := 16
 const ZOOM_STEPS: Array[float] = [0.5, 1.0, 2.0, 3.0, 4.0, 6.0]
 const TilePalette := preload("res://addons/lcf_editor/tile_palette.gd")
+const EventEditor := preload("res://addons/lcf_editor/event_editor.gd")
+const FieldTree := preload("res://addons/lcf_editor/field_tree.gd")
+const PAINT_HELP := "Left: paint · Right: pick tile · Middle or Space+drag: pan · Wheel: zoom · Shift: exact tile (no autotiling)"
+const EVENT_HELP := "Click: select event · Double-click: edit, or create on an empty cell · Drag: move · Right-click: menu · Del: delete · Ctrl+C / Ctrl+V: copy / paste"
 
 enum Tool { PENCIL, RECTANGLE, FILL, PICK }
-enum Layer { LOWER, UPPER }
+enum Layer { LOWER, UPPER, EVENTS }
 
 var project: RefCounted  # LcfProject
 var chipset: RefCounted  # LcfChipset
@@ -43,7 +48,10 @@ var upper_layer: TileMapLayer
 var overlay: Node2D
 var message: Label
 var palette: Control
+var palette_scroll: ScrollContainer
 var confirm_dialog: ConfirmationDialog
+var event_editor: EventEditor
+var event_menu: PopupMenu
 
 var zoom_index := 2
 var panning := false
@@ -59,6 +67,13 @@ var rect_end := Vector2i(-1, -1)
 var stroke_before := {}
 var stroke_after := {}
 
+# Events layer
+var selected_event := -1      # event ID
+var dragging_event := false
+var drag_cell := Vector2i(-1, -1)
+var menu_cell := Vector2i(-1, -1)
+var event_clipboard := ""     # event XML
+
 
 func _ready() -> void:
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -70,7 +85,7 @@ func _ready() -> void:
 	title_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	title_label.clip_text = true
 	bar.add_child(title_label)
-	events_toggle = _toggle(bar, "Events", true)
+	events_toggle = _toggle(bar, "Show events", true)
 	grid_toggle = _toggle(bar, "Grid", false)
 	for step in [-1, 1]:
 		var button := Button.new()
@@ -84,7 +99,7 @@ func _ready() -> void:
 	var tools := HBoxContainer.new()
 	add_child(tools)
 	var layer_group := ButtonGroup.new()
-	for entry in [["Lower layer", Layer.LOWER], ["Upper layer", Layer.UPPER]]:
+	for entry in [["Lower layer", Layer.LOWER], ["Upper layer", Layer.UPPER], ["Events", Layer.EVENTS]]:
 		layer_buttons.append(_choice(tools, entry[0], layer_group, _set_layer.bind(entry[1])))
 	tools.add_child(VSeparator.new())
 	var tool_group := ButtonGroup.new()
@@ -141,7 +156,7 @@ func _ready() -> void:
 	message.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	viewport_area.add_child(message)
 
-	var palette_scroll := ScrollContainer.new()
+	palette_scroll = ScrollContainer.new()
 	palette_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	palette_scroll.custom_minimum_size = Vector2(TilePalette.COLUMNS * 16 * TilePalette.SCALE + 16, 0)
 	palette_scroll.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
@@ -151,7 +166,7 @@ func _ready() -> void:
 	palette_scroll.add_child(palette)
 
 	status_label = Label.new()
-	status_label.text = "Left: paint · Right: pick tile · Middle or Space+drag: pan · Wheel: zoom · Shift: exact tile (no autotiling)"
+	status_label.text = PAINT_HELP
 	status_label.clip_text = true
 	add_child(status_label)
 
@@ -159,6 +174,13 @@ func _ready() -> void:
 	confirm_dialog.dialog_autowrap = true
 	confirm_dialog.min_size = Vector2i(480, 0)
 	add_child(confirm_dialog)
+
+	event_editor = EventEditor.new()
+	event_editor.event_changed.connect(_on_event_edited)
+	add_child(event_editor)
+	event_menu = PopupMenu.new()
+	event_menu.id_pressed.connect(_on_event_menu)
+	add_child(event_menu)
 	_update_zoom_label()
 
 
@@ -199,6 +221,9 @@ func show_map(p_project: RefCounted, p_map_id: int, p_map_name: String) -> void:
 		return
 	lower = map.lower
 	upper = map.upper
+	selected_event = -1
+	if event_editor.visible and event_editor.map_id != map_id:
+		event_editor.hide()
 	round_trip_ok = project.check_map_round_trip(map_id).get("identical", true)
 
 	var info: Dictionary = project.get_chipset(map.chipset_id)
@@ -264,6 +289,16 @@ func _fill_layers() -> void:
 
 func _set_layer(value: Layer) -> void:
 	layer = value
+	var events_mode := layer == Layer.EVENTS
+	palette_scroll.visible = not events_mode
+	for button in tool_buttons:
+		button.disabled = events_mode
+	status_label.text = EVENT_HELP if events_mode else PAINT_HELP
+	if events_mode:
+		events_toggle.button_pressed = true
+		upper_layer.modulate.a = 1.0
+		overlay.queue_redraw()
+		return
 	if not chipset:
 		palette.set_tiles(null, [])
 		return
@@ -293,7 +328,7 @@ func _inside(cell: Vector2i) -> bool:
 
 
 func _paint(cells: PackedInt32Array, exact: bool) -> void:
-	if cells.is_empty() or not chipset:
+	if cells.is_empty() or not chipset or layer == Layer.EVENTS:
 		return
 	var change: Dictionary = project.paint_map_tiles(map_id, layer, cells, selected_tile[layer], not exact)
 	var changed: PackedInt32Array = change.get("cells", PackedInt32Array())
@@ -419,10 +454,15 @@ func _on_gui_input(event: InputEvent) -> void:
 				panning = event.pressed
 			MOUSE_BUTTON_RIGHT:
 				if event.pressed and _inside(cell):
-					_pick(cell)
+					if layer == Layer.EVENTS:
+						_open_event_menu(cell, event.global_position)
+					else:
+						_pick(cell)
 			MOUSE_BUTTON_LEFT:
 				if Input.is_key_pressed(KEY_SPACE):
 					panning = event.pressed
+				elif layer == Layer.EVENTS:
+					_on_event_click(cell, event)
 				elif event.pressed and _inside(cell):
 					_on_left_pressed(cell, event.shift_pressed)
 				elif not event.pressed and painting:
@@ -434,6 +474,9 @@ func _on_gui_input(event: InputEvent) -> void:
 		if panning:
 			canvas.position += event.relative
 		var cell := _cell_at(event.position)
+		if dragging_event and _inside(cell) and cell != drag_cell:
+			drag_cell = cell
+			overlay.queue_redraw()
 		if painting and cell != last_cell:
 			if tool == Tool.PENCIL:
 				_paint(_line(last_cell, cell), event.shift_pressed)
@@ -442,6 +485,21 @@ func _on_gui_input(event: InputEvent) -> void:
 				overlay.queue_redraw()
 			last_cell = cell
 		_update_status(cell)
+	elif event is InputEventKey and event.pressed and layer == Layer.EVENTS and selected_event > 0:
+		if event.keycode == KEY_DELETE:
+			_delete_event(selected_event)
+			viewport_area.accept_event()
+		elif event.keycode == KEY_C and event.is_command_or_control_pressed():
+			event_clipboard = project.get_map_event_xml(map_id, selected_event)
+			viewport_area.accept_event()
+		elif event.keycode == KEY_ENTER:
+			_edit_event(selected_event)
+			viewport_area.accept_event()
+	elif event is InputEventKey and event.pressed and layer == Layer.EVENTS and event.keycode == KEY_V and event.is_command_or_control_pressed():
+		var cell := _cell_at(viewport_area.get_local_mouse_position())
+		if _inside(cell):
+			_paste_event(cell)
+		viewport_area.accept_event()
 
 
 func _on_left_pressed(cell: Vector2i, exact: bool) -> void:
@@ -462,6 +520,164 @@ func _on_left_pressed(cell: Vector2i, exact: bool) -> void:
 			_begin_stroke()
 			_paint(_fill_cells(cell), exact)
 			_end_stroke()
+
+
+# --- events -----------------------------------------------------------------------
+
+func _event_at(cell: Vector2i) -> Dictionary:
+	for event: Dictionary in map.get("events", []):
+		if event.x == cell.x and event.y == cell.y:
+			return event
+	return {}
+
+
+func _on_event_click(cell: Vector2i, event: InputEventMouseButton) -> void:
+	if event.pressed:
+		var target := _event_at(cell) if _inside(cell) else {}
+		if event.double_click:
+			if target.is_empty():
+				if _inside(cell):
+					_new_event(cell)
+			else:
+				_edit_event(target.id)
+			return
+		selected_event = target.get("id", -1)
+		dragging_event = selected_event > 0
+		drag_cell = cell
+		viewport_area.grab_focus()
+		overlay.queue_redraw()
+		_update_status(cell)
+	elif dragging_event:
+		dragging_event = false
+		var moving := _event_by_id(selected_event)
+		if not moving.is_empty() and _inside(drag_cell) and Vector2i(moving.x, moving.y) != drag_cell:
+			if not _event_at(drag_cell).is_empty():
+				_update_map_status("Another event is already there.", true)
+			else:
+				_move_event(selected_event, drag_cell)
+		overlay.queue_redraw()
+
+
+func _event_by_id(id: int) -> Dictionary:
+	for event: Dictionary in map.get("events", []):
+		if event.id == id:
+			return event
+	return {}
+
+
+func _open_event_menu(cell: Vector2i, at: Vector2) -> void:
+	menu_cell = cell
+	var target := _event_at(cell)
+	selected_event = target.get("id", -1)
+	overlay.queue_redraw()
+	event_menu.clear()
+	if target.is_empty():
+		event_menu.add_item("New event", 0)
+		event_menu.add_item("Paste event", 3)
+		event_menu.set_item_disabled(1, event_clipboard == "")
+	else:
+		event_menu.add_item("Edit event…", 1)
+		event_menu.add_item("Copy event", 2)
+		event_menu.add_separator()
+		event_menu.add_item("Delete event", 4)
+	event_menu.position = Vector2i(at)
+	event_menu.reset_size()
+	event_menu.popup()
+
+
+func _on_event_menu(id: int) -> void:
+	match id:
+		0: _new_event(menu_cell)
+		1: _edit_event(selected_event)
+		2: event_clipboard = project.get_map_event_xml(map_id, selected_event)
+		3: _paste_event(menu_cell)
+		4: _delete_event(selected_event)
+
+
+func _new_event(cell: Vector2i) -> void:
+	var id: int = project.add_map_event(map_id, cell.x, cell.y)
+	if id < 0:
+		_update_map_status("Could not create event: " + project.get_last_error(), true)
+		return
+	_record_event("New event", id, "", project.get_map_event_xml(map_id, id))
+	selected_event = id
+	_edit_event(id)
+
+
+func _paste_event(cell: Vector2i) -> void:
+	if event_clipboard == "" or not _event_at(cell).is_empty():
+		return
+	var id: int = project.insert_map_event_xml(map_id, event_clipboard)
+	if id < 0:
+		_update_map_status("Could not paste event: " + project.get_last_error(), true)
+		return
+	var tree := FieldTree.parse(project.get_map_event_xml(map_id, id))
+	project.set_map_event_field(map_id, id, FieldTree.path_of(tree, ["x"]), str(cell.x))
+	project.set_map_event_field(map_id, id, FieldTree.path_of(tree, ["y"]), str(cell.y))
+	_record_event("Paste event", id, "", project.get_map_event_xml(map_id, id))
+	selected_event = id
+
+
+func _move_event(id: int, cell: Vector2i) -> void:
+	var before: String = project.get_map_event_xml(map_id, id)
+	var tree := FieldTree.parse(before)
+	project.set_map_event_field(map_id, id, FieldTree.path_of(tree, ["x"]), str(cell.x))
+	project.set_map_event_field(map_id, id, FieldTree.path_of(tree, ["y"]), str(cell.y))
+	_record_event("Move event", id, before, project.get_map_event_xml(map_id, id))
+
+
+func _delete_event(id: int) -> void:
+	var before: String = project.get_map_event_xml(map_id, id)
+	if before == "" or project.delete_map_event(map_id, id) != OK:
+		return
+	_record_event("Delete event", id, before, "")
+	selected_event = -1
+
+
+func _edit_event(id: int) -> void:
+	if id > 0:
+		event_editor.edit(project, map_id, id)
+
+
+func _on_event_edited(action: String, id: int, before: String, after: String) -> void:
+	_record_event(action, id, before, after, false)
+
+
+## Registers an event change that already happened, for undo/redo.
+func _record_event(action: String, id: int, before: String, after: String, reload_editor := true) -> void:
+	if undo_redo:
+		undo_redo.create_action(action)
+		undo_redo.add_do_method(self, "apply_event", map_id, id, after)
+		undo_redo.add_undo_method(self, "apply_event", map_id, id, before)
+		undo_redo.commit_action(false)
+	_refresh_events(reload_editor)
+
+
+## Puts an event into the given state: its XML, or "" for deleted (used by undo/redo).
+func apply_event(p_map_id: int, id: int, xml: String) -> void:
+	var exists: bool = project.get_map_event_xml(p_map_id, id) != ""
+	if xml == "":
+		if exists:
+			project.delete_map_event(p_map_id, id)
+	elif exists:
+		project.set_map_event_xml(p_map_id, id, xml)
+	else:
+		project.insert_map_event_xml(p_map_id, xml)
+	if p_map_id == map_id:
+		_refresh_events(true)
+	_update_map_status()
+
+
+func _refresh_events(reload_editor: bool) -> void:
+	if map.is_empty():
+		return
+	map.events = project.get_map(map_id).events
+	if _event_by_id(selected_event).is_empty():
+		selected_event = -1
+	if reload_editor and event_editor.visible and event_editor.map_id == map_id:
+		event_editor.reload()
+	overlay.queue_redraw()
+	_update_map_status()
 
 
 # --- saving -----------------------------------------------------------------------
@@ -519,6 +735,7 @@ func _on_revert_pressed() -> void:
 	confirm_dialog.dialog_text = "Discard all unsaved changes to this map?"
 	_reconnect(func() -> void:
 		project.revert_map(map_id)
+		event_editor.hide()
 		if undo_redo:
 			undo_redo.clear_history()
 		show_map(project, map_id, map_name)
@@ -550,6 +767,13 @@ func _draw_overlay() -> void:
 			var r := Rect2(Vector2(event.x, event.y) * TILE + Vector2(1, 1), Vector2(TILE - 2, TILE - 2))
 			overlay.draw_rect(r, Color(1, 1, 1, 0.25))
 			overlay.draw_rect(r, Color(1, 1, 1, 0.9), false)
+		var chosen := _event_by_id(selected_event)
+		if layer == Layer.EVENTS and not chosen.is_empty():
+			var r := Rect2(Vector2(chosen.x, chosen.y) * TILE, Vector2(TILE, TILE))
+			overlay.draw_rect(r, Color(1.0, 0.85, 0.2, 0.35))
+			overlay.draw_rect(r, Color(1.0, 0.85, 0.2), false, 2.0)
+			if dragging_event and drag_cell != Vector2i(chosen.x, chosen.y):
+				overlay.draw_rect(Rect2(Vector2(drag_cell) * TILE, Vector2(TILE, TILE)), Color(1.0, 0.85, 0.2), false, 1.0)
 	if painting and tool == Tool.RECTANGLE and rect_start.x >= 0:
 		var a := Vector2(mini(rect_start.x, rect_end.x), mini(rect_start.y, rect_end.y)) * TILE
 		var b := Vector2(maxi(rect_start.x, rect_end.x) + 1, maxi(rect_start.y, rect_end.y) + 1) * TILE

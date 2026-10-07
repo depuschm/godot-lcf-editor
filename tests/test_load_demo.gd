@@ -80,7 +80,7 @@ func _init() -> void:
 	for child: Dictionary in parsed.get("children", []):
 		if child.tag == "event_commands":
 			commands = child.children
-	_check(commands.size() == 11, "common event has its 11 commands")
+	_check(commands.size() == 12, "common event has its 12 commands")
 	view.free()
 
 	failed = failed or _failures > 0

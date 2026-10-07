@@ -150,8 +150,109 @@ func _init() -> void:
 			again.load(work)
 			_check(again.get_map(id).lower[cy * w + cx] == 0, "painted tiles are in the saved map")
 
+	# 6. Events: every event and command list passes through the editor unchanged.
+	_test_events(work, backups, map_ids)
+
 	print("FAILED" if _failures > 0 else "OK")
 	quit(1 if _failures > 0 else 0)
+
+
+func _test_events(work: String, backups: String, map_ids: Array[int]) -> void:
+	var project: RefCounted = ClassDB.instantiate("LcfProject")
+	project.load(work)
+	var scratch := work.get_base_dir()
+	var map_export := scratch.path_join("events.lmu")
+	var events := 0
+	var pages := 0
+	var commands := 0
+	var failed: Array[String] = []
+	var changed_maps: Array[String] = []
+	for id in map_ids:
+		project.export_map(id, map_export)
+		var before := FileAccess.get_file_as_bytes(map_export)
+		for event: Dictionary in project.get_map(id).events:
+			var xml: String = project.get_map_event_xml(id, event.id)
+			if project.set_map_event_xml(id, event.id, xml) != OK:
+				failed.append("Map%04d EV%04d: %s" % [id, event.id, project.get_last_error()])
+			events += 1
+			for page in event.page_count:
+				var list: Array = project.get_map_event_commands(id, event.id, page)
+				if project.set_map_event_commands(id, event.id, page, list) != OK:
+					failed.append("Map%04d EV%04d page %d: %s" % [id, event.id, page + 1, project.get_last_error()])
+				pages += 1
+				commands += list.size()
+		project.export_map(id, map_export)
+		if FileAccess.get_file_as_bytes(map_export) != before:
+			changed_maps.append("Map%04d" % id)
+	_check(failed.is_empty(), "%d events (%d pages, %d commands) parse back from XML and command lists %s" % [events, pages, commands, failed.slice(0, 3)])
+	_check(changed_maps.is_empty(), "event round trips change no byte of any map %s" % [changed_maps.slice(0, 5)])
+
+	var ldb_export := scratch.path_join("events.ldb")
+	project.export_database(ldb_export)
+	var db_before := FileAccess.get_file_as_bytes(ldb_export)
+	var common: int = project.get_database_entries("commonevents").size()
+	var common_failed := 0
+	for i in common:
+		if project.set_common_event_commands(i, project.get_common_event_commands(i)) != OK:
+			common_failed += 1
+	project.export_database(ldb_export)
+	_check(common_failed == 0 and FileAccess.get_file_as_bytes(ldb_export) == db_before, "%d common event command lists round-trip byte-identically" % common)
+	project.revert_database()
+
+	if map_ids.is_empty():
+		return
+	var id: int = map_ids[0]
+	project.revert_map(id)
+	project.export_map(id, map_export)
+	var original := FileAccess.get_file_as_bytes(map_export)
+
+	# Bad input is rejected.
+	var bad := [{ "code": 0, "indent": 0, "string": "", "parameters": PackedInt32Array() }]
+	var first_event: int = project.get_map(id).events[0].id if project.get_map(id).events.size() > 0 else -1
+	if first_event > 0:
+		_check(project.set_map_event_commands(id, first_event, 0, bad) != OK, "command code 0 (the list terminator) is rejected")
+		_check(project.set_map_event_xml(id, first_event, "<Actor id=\"0001\"></Actor>") != OK, "wrong XML root for an event is rejected")
+		_check(not project.is_map_modified(id), "rejected event edits leave the map unmodified")
+
+	# Create, edit, copy pages, delete and restore an event.
+	var new_id: int = project.add_map_event(id, 0, 0)
+	_check(new_id > 0, "new event gets ID %d" % new_id)
+	var created := {}
+	for event: Dictionary in project.get_map(id).events:
+		if event.id == new_id:
+			created = event
+	_check(created.get("name") == "EV%04d" % new_id and created.get("page_count") == 1, "new event is named %s with one page" % created.get("name"))
+	var message := [
+		{ "code": 10110, "indent": 0, "string": "Hello from Godot", "parameters": PackedInt32Array() },
+		{ "code": 20110, "indent": 0, "string": "second line", "parameters": PackedInt32Array() },
+		{ "code": 10230, "indent": 0, "string": "", "parameters": PackedInt32Array([20]) },
+	]
+	_check(project.set_map_event_commands(id, new_id, 0, message) == OK, "commands set on the new event")
+	_check(project.insert_map_event_page(id, new_id, 1, 0) == OK, "page 1 copied to page 2")
+	_check(project.get_map_event_commands(id, new_id, 1).size() == 3, "copied page has the commands")
+	_check(project.insert_map_event_page(id, new_id, 0) == OK and project.get_map_event_commands(id, new_id, 0).is_empty(), "new empty page inserted in front")
+	_check(project.remove_map_event_page(id, new_id, 0) == OK, "page removed again")
+	var event_xml: String = project.get_map_event_xml(id, new_id)
+	_check("<EventPage id=\"0002\">" in event_xml, "pages are renumbered")
+	var tree: Node = load("res://addons/lcf_editor/database_view.gd").new()
+	var name_path := _path_of(tree._parse(event_xml), ["name"])
+	tree.free()
+	_check(project.set_map_event_field(id, new_id, name_path, "Greeter") == OK, "event field set: " + project.get_last_error())
+	var greeter_xml: String = project.get_map_event_xml(id, new_id)
+	_check(project.delete_map_event(id, new_id) == OK, "event deleted")
+	_check(project.insert_map_event_xml(id, greeter_xml) == new_id, "deleted event restored with its ID")
+	_check(project.get_map_event_xml(id, new_id) == greeter_xml, "restored event is identical")
+	project.delete_map_event(id, new_id)
+	project.export_map(id, map_export)
+	_check(FileAccess.get_file_as_bytes(map_export) == original, "deleting the new event gives back the map byte for byte")
+	project.insert_map_event_xml(id, greeter_xml)
+	_check(project.save_map(id, backups) == OK, "map with the new event saves: " + project.get_last_error())
+
+	var reloaded: RefCounted = ClassDB.instantiate("LcfProject")
+	reloaded.load(work)
+	var saved: Array = reloaded.get_map_event_commands(id, new_id, 0)
+	_check(saved.size() == 3 and saved[0].string == "Hello from Godot" and saved[2].parameters == PackedInt32Array([20]), "commands are in the saved map")
+	_check(reloaded.get_map_event_xml(id, new_id) == greeter_xml, "saved event reads back identically")
 
 
 # Child-element indices of a field, following tag names from the entry's root.

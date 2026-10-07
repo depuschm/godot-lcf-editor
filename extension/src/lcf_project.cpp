@@ -1,6 +1,7 @@
 #include "lcf_project.h"
 
 #include "database_sections.h"
+#include "lcf_xml.h"
 #include "tile_rules.h"
 
 #include <godot_cpp/classes/project_settings.hpp>
@@ -440,6 +441,19 @@ String LcfProject::get_event_command_name(int code) {
 	return name ? String(name) : String();
 }
 
+PackedInt32Array LcfProject::get_event_command_codes() {
+	std::vector<int> codes;
+	for (const auto &tag : lcf::rpg::EventCommand::kCodeTags) {
+		codes.push_back(int(tag.value));
+	}
+	std::sort(codes.begin(), codes.end());
+	PackedInt32Array out;
+	for (int code : codes) {
+		out.push_back(code);
+	}
+	return out;
+}
+
 Error LcfProject::set_database_entry_xml(const String &section, int index, const String &xml) {
 	last_error = String();
 	if (!db) {
@@ -825,6 +839,318 @@ Dictionary LcfProject::check_map_round_trip(int map_id) const {
 	return result;
 }
 
+// --- events ----------------------------------------------------------------------
+
+namespace {
+
+Array commands_to_array(const std::vector<lcf::rpg::EventCommand> &commands) {
+	Array out;
+	for (const auto &command : commands) {
+		Dictionary c;
+		c["code"] = command.code;
+		c["indent"] = command.indent;
+		c["string"] = to_godot(lcf::ToString(command.string));
+		PackedInt32Array params;
+		params.resize(int64_t(command.parameters.size()));
+		for (size_t i = 0; i < command.parameters.size(); ++i) {
+			params.set(int64_t(i), command.parameters[i]);
+		}
+		c["parameters"] = params;
+		out.push_back(c);
+	}
+	return out;
+}
+
+// Converts and checks a command list from GDScript. Code 0 would end the list early
+// in the file (it is the terminator), so it is rejected like other broken entries.
+bool array_to_commands(const Array &in, std::vector<lcf::rpg::EventCommand> &out, String &error) {
+	out.clear();
+	out.reserve(size_t(in.size()));
+	for (int64_t i = 0; i < in.size(); ++i) {
+		if (in[i].get_type() != Variant::DICTIONARY) {
+			error = "Command " + String::num_int64(i) + " is not a Dictionary";
+			return false;
+		}
+		const Dictionary c = in[i];
+		lcf::rpg::EventCommand command;
+		command.code = int32_t(int64_t(c.get("code", 0)));
+		command.indent = int32_t(int64_t(c.get("indent", 0)));
+		if (command.code <= 0) {
+			error = "Command " + String::num_int64(i) + " has no valid code";
+			return false;
+		}
+		if (command.indent < 0) {
+			error = "Command " + String::num_int64(i) + " has a negative indent";
+			return false;
+		}
+		const CharString text = String(c.get("string", String())).utf8();
+		command.string = lcf::DBString(std::string_view(text.get_data(), size_t(text.length())));
+		const PackedInt32Array params = c.get("parameters", PackedInt32Array());
+		if (!params.is_empty()) {
+			command.parameters = lcf::DBArray<int32_t>(params.ptr(), params.ptr() + params.size());
+		}
+		out.push_back(std::move(command));
+	}
+	return true;
+}
+
+int lowest_free_event_id(const lcf::rpg::Map &map) {
+	std::set<int> used;
+	for (const auto &event : map.events) {
+		used.insert(event.ID);
+	}
+	int id = 1;
+	while (used.count(id)) {
+		++id;
+	}
+	return id;
+}
+
+// Keeps events ordered by ID, as RPG Maker writes them.
+void insert_sorted(lcf::rpg::Map &map, lcf::rpg::Event event) {
+	auto at = std::find_if(map.events.begin(), map.events.end(),
+			[&](const lcf::rpg::Event &e) { return e.ID > event.ID; });
+	map.events.insert(at, std::move(event));
+}
+
+// A page as RPG Maker's editor creates it. liblcf's defaults describe what the file
+// format leaves out (e.g. movement "random"); new pages in RPG Maker stand still on
+// the hero's layer, as nearly all pages in EasyRPG's TestGame do.
+lcf::rpg::EventPage new_page() {
+	lcf::rpg::EventPage page;
+	page.move_type = lcf::rpg::EventPage::MoveType_stationary;
+	page.layer = lcf::rpg::EventPage::Layers_same;
+	return page;
+}
+
+void renumber_pages(lcf::rpg::Event &event) {
+	for (size_t i = 0; i < event.pages.size(); ++i) {
+		event.pages[i].ID = int(i) + 1;
+	}
+}
+
+} // namespace
+
+lcf::rpg::Event *LcfProject::event_ref(int map_id, int event_id) {
+	auto *map = map_ref(map_id);
+	if (!map) {
+		return nullptr;
+	}
+	for (auto &event : map->events) {
+		if (event.ID == event_id) {
+			return &event;
+		}
+	}
+	last_error = "No event " + String::num_int64(event_id) + " on map " + String::num_int64(map_id);
+	return nullptr;
+}
+
+lcf::rpg::EventPage *LcfProject::page_ref(int map_id, int event_id, int page) {
+	auto *event = event_ref(map_id, event_id);
+	if (!event) {
+		return nullptr;
+	}
+	if (page < 0 || page >= int(event->pages.size())) {
+		last_error = "No page " + String::num_int64(page + 1) + " in event " + String::num_int64(event_id);
+		return nullptr;
+	}
+	return &event->pages[size_t(page)];
+}
+
+String LcfProject::get_map_event_xml(int map_id, int event_id) {
+	auto *event = event_ref(map_id, event_id);
+	if (!event || !db) {
+		return String();
+	}
+	return to_godot(lcf_xml::write(*event, lcf::GetEngineVersion(*db)));
+}
+
+Error LcfProject::set_map_event_xml(int map_id, int event_id, const String &xml) {
+	last_error = String();
+	auto *event = event_ref(map_id, event_id);
+	if (!event) {
+		return ERR_DOES_NOT_EXIST;
+	}
+	lcf::rpg::Event parsed;
+	std::string error;
+	if (!lcf_xml::read(parsed, xml.utf8().get_data(), "Event", error)) {
+		last_error = to_godot(error);
+		return ERR_PARSE_ERROR;
+	}
+	parsed.ID = event->ID;
+	*event = std::move(parsed);
+	modified_maps.insert(map_id);
+	return OK;
+}
+
+Error LcfProject::set_map_event_field(int map_id, int event_id, const PackedInt32Array &path, const String &value) {
+	last_error = String();
+	auto *event = event_ref(map_id, event_id);
+	if (!event || !db) {
+		return ERR_DOES_NOT_EXIST;
+	}
+	std::string xml = lcf_xml::write(*event, lcf::GetEngineVersion(*db));
+	std::vector<int> steps;
+	for (int64_t i = 0; i < path.size(); ++i) {
+		steps.push_back(path[i]);
+	}
+	std::string error;
+	if (!lcf_xml::set_leaf_text(xml, steps, value.utf8().get_data(), error)) {
+		last_error = to_godot(error);
+		return ERR_INVALID_PARAMETER;
+	}
+	return set_map_event_xml(map_id, event_id, to_godot(xml));
+}
+
+int LcfProject::add_map_event(int map_id, int x, int y) {
+	last_error = String();
+	auto *map = map_ref(map_id);
+	if (!map) {
+		return -1;
+	}
+	if (x < 0 || y < 0 || x >= map->width || y >= map->height) {
+		last_error = "Position outside the map";
+		return -1;
+	}
+	lcf::rpg::Event event;
+	event.ID = lowest_free_event_id(*map);
+	char name[16];
+	std::snprintf(name, sizeof(name), "EV%04d", event.ID);
+	event.name = lcf::DBString(name);
+	event.x = x;
+	event.y = y;
+	event.pages.push_back(new_page());
+	renumber_pages(event);
+	const int id = event.ID;
+	insert_sorted(*map, std::move(event));
+	modified_maps.insert(map_id);
+	return id;
+}
+
+int LcfProject::insert_map_event_xml(int map_id, const String &xml) {
+	last_error = String();
+	auto *map = map_ref(map_id);
+	if (!map) {
+		return -1;
+	}
+	lcf::rpg::Event parsed;
+	std::string error;
+	if (!lcf_xml::read(parsed, xml.utf8().get_data(), "Event", error)) {
+		last_error = to_godot(error);
+		return -1;
+	}
+	const bool taken = parsed.ID <= 0 || std::any_of(map->events.begin(), map->events.end(),
+			[&](const lcf::rpg::Event &e) { return e.ID == parsed.ID; });
+	if (taken) {
+		parsed.ID = lowest_free_event_id(*map);
+	}
+	const int id = parsed.ID;
+	insert_sorted(*map, std::move(parsed));
+	modified_maps.insert(map_id);
+	return id;
+}
+
+Error LcfProject::delete_map_event(int map_id, int event_id) {
+	last_error = String();
+	auto *map = map_ref(map_id);
+	if (!map) {
+		return ERR_FILE_NOT_FOUND;
+	}
+	auto it = std::find_if(map->events.begin(), map->events.end(),
+			[&](const lcf::rpg::Event &e) { return e.ID == event_id; });
+	if (it == map->events.end()) {
+		last_error = "No event " + String::num_int64(event_id);
+		return ERR_DOES_NOT_EXIST;
+	}
+	map->events.erase(it);
+	modified_maps.insert(map_id);
+	return OK;
+}
+
+Error LcfProject::insert_map_event_page(int map_id, int event_id, int index, int copy_from) {
+	last_error = String();
+	auto *event = event_ref(map_id, event_id);
+	if (!event) {
+		return ERR_DOES_NOT_EXIST;
+	}
+	const int count = int(event->pages.size());
+	if (index < 0 || index > count || copy_from < -1 || copy_from >= count) {
+		last_error = "Page index out of range";
+		return ERR_INVALID_PARAMETER;
+	}
+	if (count >= 100) {
+		last_error = "An event can have at most 100 pages";
+		return ERR_INVALID_PARAMETER;
+	}
+	lcf::rpg::EventPage page = copy_from >= 0 ? event->pages[size_t(copy_from)] : new_page();
+	event->pages.insert(event->pages.begin() + index, std::move(page));
+	renumber_pages(*event);
+	modified_maps.insert(map_id);
+	return OK;
+}
+
+Error LcfProject::remove_map_event_page(int map_id, int event_id, int index) {
+	last_error = String();
+	auto *event = event_ref(map_id, event_id);
+	if (!event) {
+		return ERR_DOES_NOT_EXIST;
+	}
+	if (index < 0 || index >= int(event->pages.size())) {
+		last_error = "Page index out of range";
+		return ERR_INVALID_PARAMETER;
+	}
+	if (event->pages.size() == 1) {
+		last_error = "An event needs at least one page";
+		return ERR_INVALID_PARAMETER;
+	}
+	event->pages.erase(event->pages.begin() + index);
+	renumber_pages(*event);
+	modified_maps.insert(map_id);
+	return OK;
+}
+
+Array LcfProject::get_map_event_commands(int map_id, int event_id, int page) {
+	auto *p = page_ref(map_id, event_id, page);
+	return p ? commands_to_array(p->event_commands) : Array();
+}
+
+Error LcfProject::set_map_event_commands(int map_id, int event_id, int page, const Array &commands) {
+	last_error = String();
+	auto *p = page_ref(map_id, event_id, page);
+	if (!p) {
+		return ERR_DOES_NOT_EXIST;
+	}
+	std::vector<lcf::rpg::EventCommand> parsed;
+	if (!array_to_commands(commands, parsed, last_error)) {
+		return ERR_INVALID_PARAMETER;
+	}
+	p->event_commands = std::move(parsed);
+	modified_maps.insert(map_id);
+	return OK;
+}
+
+Array LcfProject::get_common_event_commands(int index) const {
+	if (!db || index < 0 || index >= int(db->commonevents.size())) {
+		return Array();
+	}
+	return commands_to_array(db->commonevents[size_t(index)].event_commands);
+}
+
+Error LcfProject::set_common_event_commands(int index, const Array &commands) {
+	last_error = String();
+	if (!db || index < 0 || index >= int(db->commonevents.size())) {
+		last_error = "No such common event";
+		return ERR_DOES_NOT_EXIST;
+	}
+	std::vector<lcf::rpg::EventCommand> parsed;
+	if (!array_to_commands(commands, parsed, last_error)) {
+		return ERR_INVALID_PARAMETER;
+	}
+	db->commonevents[size_t(index)].event_commands = std::move(parsed);
+	db_modified = true;
+	return OK;
+}
+
 void LcfProject::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("load", "project_dir"), &LcfProject::load);
 	ClassDB::bind_method(D_METHOD("is_loaded"), &LcfProject::is_loaded);
@@ -843,6 +1169,7 @@ void LcfProject::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_database_entries", "section"), &LcfProject::get_database_entries);
 	ClassDB::bind_method(D_METHOD("get_database_entry_xml", "section", "index"), &LcfProject::get_database_entry_xml);
 	ClassDB::bind_static_method("LcfProject", D_METHOD("get_event_command_name", "code"), &LcfProject::get_event_command_name);
+	ClassDB::bind_static_method("LcfProject", D_METHOD("get_event_command_codes"), &LcfProject::get_event_command_codes);
 	ClassDB::bind_method(D_METHOD("set_database_entry_xml", "section", "index", "xml"), &LcfProject::set_database_entry_xml);
 	ClassDB::bind_method(D_METHOD("set_database_field", "section", "index", "path", "value"), &LcfProject::set_database_field);
 	ClassDB::bind_method(D_METHOD("is_database_modified"), &LcfProject::is_database_modified);
@@ -859,4 +1186,16 @@ void LcfProject::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("revert_map", "map_id"), &LcfProject::revert_map);
 	ClassDB::bind_method(D_METHOD("export_map", "map_id", "path"), &LcfProject::export_map);
 	ClassDB::bind_method(D_METHOD("check_map_round_trip", "map_id"), &LcfProject::check_map_round_trip);
+	ClassDB::bind_method(D_METHOD("get_map_event_xml", "map_id", "event_id"), &LcfProject::get_map_event_xml);
+	ClassDB::bind_method(D_METHOD("set_map_event_xml", "map_id", "event_id", "xml"), &LcfProject::set_map_event_xml);
+	ClassDB::bind_method(D_METHOD("set_map_event_field", "map_id", "event_id", "path", "value"), &LcfProject::set_map_event_field);
+	ClassDB::bind_method(D_METHOD("add_map_event", "map_id", "x", "y"), &LcfProject::add_map_event);
+	ClassDB::bind_method(D_METHOD("insert_map_event_xml", "map_id", "xml"), &LcfProject::insert_map_event_xml);
+	ClassDB::bind_method(D_METHOD("delete_map_event", "map_id", "event_id"), &LcfProject::delete_map_event);
+	ClassDB::bind_method(D_METHOD("insert_map_event_page", "map_id", "event_id", "index", "copy_from"), &LcfProject::insert_map_event_page, DEFVAL(-1));
+	ClassDB::bind_method(D_METHOD("remove_map_event_page", "map_id", "event_id", "index"), &LcfProject::remove_map_event_page);
+	ClassDB::bind_method(D_METHOD("get_map_event_commands", "map_id", "event_id", "page"), &LcfProject::get_map_event_commands);
+	ClassDB::bind_method(D_METHOD("set_map_event_commands", "map_id", "event_id", "page", "commands"), &LcfProject::set_map_event_commands);
+	ClassDB::bind_method(D_METHOD("get_common_event_commands", "index"), &LcfProject::get_common_event_commands);
+	ClassDB::bind_method(D_METHOD("set_common_event_commands", "index", "commands"), &LcfProject::set_common_event_commands);
 }
