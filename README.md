@@ -34,7 +34,7 @@ The full vision, the existing landscape and the options considered are in [`docs
 - **Events:** the **Events** layer button switches the map to event editing. Click an event to select it, drag it to move it, double-click it to open the **event editor**, or double-click an empty cell to create one (named and numbered like RPG Maker does). Right-click for New, Edit, Copy, Paste and Delete; Delete, Ctrl+C and Ctrl+V work too.
 - **Event editor:** name, pages as tabs (New page, Copy page, Delete page), every page setting (conditions, graphic, movement, trigger, layer, …) with readable choices such as “Action Button” or “Stay Still”, and the page's command list as RPG Maker shows it (“◆Control Switches: [0003: Chest opened] ON”). Every change can be undone with Ctrl+Z in the map.
 - **Event commands:** **Insert…** opens a searchable list of commands by group; the common ones (Show Message, Control Switches and Variables, Conditional Branch, Teleport, Change Money/Items/Party/HP, Call Event, Wait, sounds, labels, loops, …) have dialogs with named choices (switches, items, maps and events by name). These dialogs are generated from a short description of each command, the same way plugins add their own ([below](#event-commands)). Editing follows the list's structure like RPG Maker: a branch comes with its bodies and Else, a message's lines stay together, Delete, Copy, Cut and Paste (also from the right-click menu) work on whole blocks. Every other command can be inserted and edited as raw data (code, indent, text, parameters), so nothing is out of reach.
-- **Test Play:** **▶ Test Play** (in the LCF Project dock or the Test Play panel at the bottom) saves the project and runs it in [EasyRPG Player](https://easyrpg.org/player/) in test mode (F9 opens the debug menu). On the Events layer, right-click → **Play from here** starts a new game on that cell. The Player's output appears live in the **Test Play** panel; **Stop** ends the game. Under **Settings…** you choose the Player program, whether to skip the title screen, extra Player options, and whether the game enables EasyRPG extensions (see [comment commands](#runtime-half-comment-commands)).
+- **Test Play:** **▶ Test Play** (in the LCF Project dock or the Test Play panel at the bottom) saves the project and runs it in [EasyRPG Player](https://easyrpg.org/player/) in test mode (F9 opens the debug menu). On the Events layer, right-click → **Play from here** starts a new game on that cell. The Player's output appears live in the **Test Play** panel; **Stop** ends the game. It uses the Player in an `easyrpg-player` folder inside your Godot project if there is one (the [patched Player download](#download) is made for that), or the program you choose under **Settings…**, where you also set whether to skip the title screen, extra Player options, and whether the game enables EasyRPG extensions (see [comment commands](#runtime-half-comment-commands)).
 - **Saving maps** works like the database: **Save map** makes a backup, writes a temporary file, reads it back and compares it before replacing `Map####.lmu`; **Revert** drops unsaved changes, and Godot asks about unsaved maps when it closes.
 - The **Database** tab shows every section of the database (actors, classes, skills, items, enemies, troops, states, vocabulary, system, common events, switches, variables, …). Every field of the selected entry is listed, nested structures can be expanded, event commands appear by name with their indentation, and references such as `class_id` or `switch_id` show the name they point to. Fields come straight from liblcf's own description of the format, so new fields (including Maniacs and EasyRPG extensions) appear automatically.
 - **Editing the database:** double-click a field to change it (checkbox for yes/no, number box, text field, list of named choices). **Save** writes `RPG_RT.ldb`; **Revert** drops unsaved changes, and Godot warns about unsaved changes when it closes. **Common events** get the same command list as map events.
@@ -228,12 +228,15 @@ docs/                      Vision document and README images
 
 ## Download
 
-Every push is built and tested on **Windows** and **Linux** by [GitHub Actions](https://github.com/depuschm/godot-lcf-editor/actions/workflows/build.yml): the smoke test, the round-trip test on the demo and on EasyRPG's TestGame (2000, 2003, Maniacs), the event command, plugin API, Test Play and event editor tests, the tests of both showcase plugins (on Linux also in the patched EasyRPG Player), and a check that the Godot editor loads all plugins without script errors.
+Every push is built and tested on **Windows** and **Linux** by [GitHub Actions](https://github.com/depuschm/godot-lcf-editor/actions/workflows/build.yml): the smoke test, the round-trip test on the demo and on EasyRPG's TestGame (2000, 2003, Maniacs), the event command, plugin API, Test Play and event editor tests, the tests of both showcase plugins (also in the patched EasyRPG Player, which CI builds for both systems), and a check that the Godot editor loads all plugins without script errors.
 
-- **Releases:** ready-to-use addon zips with Windows and Linux binaries appear under [Releases](https://github.com/depuschm/godot-lcf-editor/releases) once a version is tagged.
+- **Releases:** under [Releases](https://github.com/depuschm/godot-lcf-editor/releases), each version has
+  - `lcf_editor-<version>.zip`: the addons (the LCF Editor with Windows and Linux binaries, the example plugin and both showcase plugins);
+  - `easyrpg-player-patched-windows-x64.zip` and `easyrpg-player-patched-linux-x86_64.zip`: EasyRPG Player with the [showcase patches](runtime/easyrpg-player), ready to run (the Linux build is for Ubuntu 24.04 and similar systems);
+  - `easyrpg-player-patched-source.tar.gz`: the complete source of that Player (GPLv3).
 - **Latest build:** open the newest successful run on the [Actions page](https://github.com/depuschm/godot-lcf-editor/actions/workflows/build.yml) and download `lcf_editor-Windows` or `lcf_editor-Linux` (needs a GitHub login).
 
-To use a download, put the `lcf_editor` folder into your Godot project's `addons/` folder (or clone this repository and copy it into `addons/lcf_editor`), then enable **LCF Editor** under *Project → Project Settings → Plugins*. The zip also contains the example plugin `lcf_map_notes` and the showcase plugins `lcf_pixel_movement` and `lcf_shaders`; copy them too if you want them (the showcases need the [patched EasyRPG Player](runtime/easyrpg-player) in the game). macOS builds are not provided yet.
+To use a download, unpack the addons zip into your Godot project so that its `addons` folder sits next to `project.godot`, then enable **LCF Editor** (and any other plugins you want) under *Project → Project Settings → Plugins*. For the showcases, also unpack the patched Player's zip into the project: Test Play finds the `easyrpg-player` folder on its own. The zip also contains the example plugin `lcf_map_notes` and the showcase plugins `lcf_pixel_movement` and `lcf_shaders`; copy them too if you want them (the showcases need the [patched EasyRPG Player](runtime/easyrpg-player) in the game). macOS builds are not provided yet.
 
 ## Building
 
@@ -301,7 +304,7 @@ godot --headless --path . --script res://tests/test_test_play.gd -- /path/to/eas
 
 ### Pixel movement tests
 
-`test_pixel_movement.gd` checks the plugin's editor half (hitbox comments, the settings file, the Hitbox panel, the map tool, the commands). `test_pixel_runtime.gd` needs the patched EasyRPG Player ([build it](runtime/easyrpg-player/README.md#building)) and a display:
+`test_pixel_movement.gd` checks the plugin's editor half (hitbox comments, the settings file, the Hitbox panel, the map tool, the commands). `test_pixel_runtime.gd` needs the patched EasyRPG Player ([download](#download) or [build it](runtime/easyrpg-player/README.md#building)) and a display:
 
 ```bash
 godot --headless --path . --script res://tests/test_pixel_movement.gd
@@ -359,6 +362,7 @@ cmake -S tools -B build-tools && cmake --build build-tools
 | M6 | Test Play with EasyRPG Player; runtime extension mechanism (comment commands, plugin data) ✅ |
 | M7a | Showcase: pixel-perfect movement — editor plugin and EasyRPG Player patch (prototype) ✅ |
 | M7b | Showcase: screen shaders — editor plugin with live preview and EasyRPG Player patch (prototype) ✅ |
+| M8 | Release v0.2.0 with the patched EasyRPG Player built for Windows and Linux; Test Play finds it in the project |
 
 ## Contributing
 

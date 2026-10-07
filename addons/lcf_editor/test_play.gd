@@ -22,8 +22,11 @@ const SETTING_PATH := "lcf_editor/test_play/player_path"
 const SETTING_SKIP_TITLE := "lcf_editor/test_play/skip_title"
 const SETTING_OPTIONS := "lcf_editor/test_play/extra_options"
 
-## Path of the EasyRPG Player executable.
+## Path of the EasyRPG Player executable ("" for the bundled one, see bundled_dir).
 var player_path := ""
+## Where Test Play looks for a Player when player_path is empty: the easyrpg-player
+## folder from the patched Player's download, put into the Godot project.
+var bundled_dir := "res://easyrpg-player"
 ## Start a new game directly instead of showing the title screen.
 var skip_title := false
 ## More command line options, separated by spaces (e.g. "--show-fps").
@@ -83,12 +86,26 @@ func build_args(project_dir: String, start := {}) -> PackedStringArray:
 	return args
 
 
+## The Player that Test Play runs: the chosen one, else the bundled one ("" if none).
+func get_player() -> String:
+	return player_path if player_path != "" else find_bundled_player()
+
+
+## The Player in bundled_dir (easyrpg-player.exe or easyrpg-player), or "".
+func find_bundled_player() -> String:
+	var dir := ProjectSettings.globalize_path(bundled_dir)
+	for file in ["easyrpg-player.exe", "easyrpg-player"]:
+		if FileAccess.file_exists(dir.path_join(file)):
+			return dir.path_join(file)
+	return ""
+
+
 ## Why the Player cannot be started, or "" if it can.
 func check_player() -> String:
-	if player_path == "":
-		return "Choose the EasyRPG Player program in the Test Play settings."
-	if not FileAccess.file_exists(player_path):
-		return "EasyRPG Player was not found at %s." % player_path
+	if get_player() == "":
+		return "Choose the EasyRPG Player program in the Test Play settings, or put the easyrpg-player folder from the patched Player's download into this Godot project."
+	if not FileAccess.file_exists(get_player()):
+		return "EasyRPG Player was not found at %s." % get_player()
 	return ""
 
 
@@ -110,7 +127,7 @@ func start(project_dir: String, start_at := {}) -> Error:
 	_log_offset = 0
 	_from_pipe = false
 	_pipes.clear()
-	var process := OS.execute_with_pipe(player_path, build_args(project_dir, start_at), false)
+	var process := OS.execute_with_pipe(get_player(), build_args(project_dir, start_at), false)
 	pid = int(process.get("pid", -1))
 	if pid <= 0:
 		pid = -1

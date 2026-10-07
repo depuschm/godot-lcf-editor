@@ -160,6 +160,8 @@ func _build_settings() -> void:
 func open_settings() -> void:
 	if test_play:
 		_path_edit.text = test_play.player_path
+		var bundled: String = test_play.find_bundled_player()
+		_path_edit.placeholder_text = ("Empty: use " + bundled) if bundled != "" else "Empty: use easyrpg-player/ in this Godot project"
 		_skip_title.button_pressed = test_play.skip_title
 		_options_edit.text = test_play.extra_options
 	var has_project: bool = project != null and project.is_loaded()

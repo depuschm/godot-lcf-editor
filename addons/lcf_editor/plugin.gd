@@ -193,4 +193,4 @@ func _launch(start: Dictionary) -> void:
 		test_play_panel.open_settings()
 		return
 	if test_play.start(dock.project.get_project_dir(), start) != OK:
-		test_play_panel.show_message("Could not start %s." % test_play.player_path, true)
+		test_play_panel.show_message("Could not start %s." % test_play.get_player(), true)

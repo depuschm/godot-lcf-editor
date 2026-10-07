@@ -122,27 +122,56 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get install -y libsdl2-dev libpixman-1-dev libpng-dev libfmt-dev libfreetype-dev \
-            libharfbuzz-dev nlohmann-json3-dev libinih-dev libexpat1-dev xvfb libgl1-mesa-dri
+            libharfbuzz-dev nlohmann-json3-dev libinih-dev libexpat1-dev libmpg123-dev libsndfile1-dev \
+            libvorbis-dev libopusfile-dev libspeexdsp-dev libasound2-dev xvfb libgl1-mesa-dri
 
-      - name: Cache patched EasyRPG Player (Linux)
-        if: runner.os == 'Linux'
+      - name: Cache EasyRPG Player libraries (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: vcpkg-cache
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('.github/workflows/build.yml') }}
+          restore-keys: vcpkg-${{ runner.os }}-
+
+      - name: Install EasyRPG Player libraries (Windows)
+        if: runner.os == 'Windows'
+        env:
+          VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}\vcpkg-cache,readwrite
+        run: |
+          mkdir -p vcpkg-cache
+          # Linked statically into easyrpg-player.exe. ICU comes with Windows 10 1903+.
+          "$VCPKG_INSTALLATION_ROOT/vcpkg" install --triplet x64-windows-static \
+            sdl2 pixman libpng zlib fmt freetype nlohmann-json inih expat mpg123 libvorbis opusfile speexdsp
+
+      - name: Cache patched EasyRPG Player
         uses: actions/cache@v4
         with:
           path: runtime/easyrpg-player/build
           key: player-${{ runner.os }}-${{ hashFiles('runtime/easyrpg-player/*.patch', 'runtime/easyrpg-player/build.sh') }}
 
-      - name: Build patched EasyRPG Player (Linux)
-        if: runner.os == 'Linux'
+      - name: Build patched EasyRPG Player
         run: |
-          PLAYER_CMAKE_ARGS="-DPLAYER_AUDIO_BACKEND=OFF" runtime/easyrpg-player/build.sh > player-path.txt
-          echo "PATCHED_PLAYER=$(tail -n 1 player-path.txt)" >> "$GITHUB_ENV"
+          if [ "$RUNNER_OS" = Windows ]; then
+            vcpkg="$(cygpath -m "$VCPKG_INSTALLATION_ROOT")"
+            export PLAYER_CMAKE_ARGS="-A x64 -DCMAKE_TOOLCHAIN_FILE=$vcpkg/scripts/buildsystems/vcpkg.cmake \
+              -DVCPKG_TARGET_TRIPLET=x64-windows-static -DPLAYER_WITH_HARFBUZZ=OFF -DPLAYER_WITH_LIBSNDFILE=OFF \
+              -DPLAYER_WITH_WILDMIDI=OFF -DPLAYER_WITH_FLUIDSYNTH=OFF -DPLAYER_WITH_FLUIDLITE=OFF \
+              -DPLAYER_WITH_XMP=OFF -DPLAYER_WITH_SAMPLERATE=OFF"
+          fi
+          runtime/easyrpg-player/build.sh > player-path.txt
+          player="$(tail -n 1 player-path.txt)"
+          if [ "$RUNNER_OS" = Windows ]; then player="$(cygpath -w "$player")"; fi
+          "$player" --version | tee player-version.txt
+          echo "PATCHED_PLAYER=$player" >> "$GITHUB_ENV"
+          echo "::notice title=Patched EasyRPG Player (${{ matrix.name }})::$(head -n 1 player-version.txt)"
 
-      - name: Pixel movement runtime test (Linux)
-        if: runner.os == 'Linux'
+      - name: Pixel movement runtime test
         run: |
-          xvfb-run -a "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_pixel_runtime.gd -- "$PATCHED_PLAYER" | tee runtime.log
+          if [ "$RUNNER_OS" = Linux ]; then run="xvfb-run -a"; else run=""; fi
+          $run "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_pixel_runtime.gd -- "$PATCHED_PLAYER" | tee runtime.log
           if grep -q "SCRIPT ERROR" runtime.log; then echo "::error::Script errors in runtime.log"; exit 1; fi
           echo "::notice title=Pixel movement in EasyRPG Player (${{ matrix.name }})::$(grep -c '  ok ' runtime.log) checks ok, result: $(tail -n 1 runtime.log)"
+          tail -n 1 runtime.log | grep -q "^OK"
 
       - name: Screen shader preview test (Linux)
         if: runner.os == 'Linux'
@@ -153,12 +182,40 @@ jobs:
           grep -q "the sepia preview tints the map" preview.log
           echo "::notice title=Screen shader preview (${{ matrix.name }})::$(grep -c '  ok ' preview.log) checks ok, result: $(tail -n 1 preview.log)"
 
-      - name: Screen shader runtime test (Linux)
-        if: runner.os == 'Linux'
+      - name: OpenGL for the shader test (Windows)
+        if: runner.os == 'Windows'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          xvfb-run -a "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_shader_runtime.gd -- "$PATCHED_PLAYER" | tee shader-runtime.log
+          # The runner has no GPU: run a copy of the Player with Mesa's software OpenGL next to it.
+          gh release download --repo pal1000/mesa-dist-win --pattern "*release-msvc.7z" --dir ../mesa
+          7z x -o../mesa ../mesa/*release-msvc.7z > /dev/null
+          mkdir -p ../player-gl
+          cp "$(cygpath -u "$PATCHED_PLAYER")" ../player-gl/
+          cp ../mesa/x64/*.dll ../player-gl/
+          echo "GL_PLAYER=$(cygpath -w "$(cd ../player-gl && pwd)/easyrpg-player.exe")" >> "$GITHUB_ENV"
+          echo "GALLIUM_DRIVER=llvmpipe" >> "$GITHUB_ENV"
+
+      - name: Screen shader runtime test
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then run="xvfb-run -a"; player="$PATCHED_PLAYER"; else run=""; player="$GL_PLAYER"; fi
+          $run "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_shader_runtime.gd -- "$player" | tee shader-runtime.log
           if grep -q "SCRIPT ERROR" shader-runtime.log; then echo "::error::Script errors in shader-runtime.log"; exit 1; fi
           echo "::notice title=Screen shaders in EasyRPG Player (${{ matrix.name }})::$(grep -c '  ok ' shader-runtime.log) checks ok, result: $(tail -n 1 shader-runtime.log)"
+          tail -n 1 shader-runtime.log | grep -q "^OK"
+
+      - name: Package patched EasyRPG Player
+        run: |
+          # The source archive is the same on both systems; Linux makes it.
+          if [ "$RUNNER_OS" = Linux ]; then source=--source; else source=; fi
+          runtime/easyrpg-player/package.sh runtime/easyrpg-player/build dist $source
+          ls -l dist
+
+      - name: Upload patched EasyRPG Player
+        uses: actions/upload-artifact@v4
+        with:
+          name: easyrpg-player-patched-${{ runner.os }}
+          path: dist/*
 
       - name: Round-trip test (EasyRPG TestGame)
         run: |
@@ -219,15 +276,26 @@ jobs:
           cp artifacts/lcf_editor-Windows/lcf_editor/bin/* addons/lcf_editor/bin/
           ls -l addons/lcf_editor/bin addons/lcf_map_notes
           zip -r "lcf_editor-${GITHUB_REF_NAME}.zip" addons
+          # The patched EasyRPG Player for both systems and its source
+          cp artifacts/easyrpg-player-patched-*/* .
+          ls -l *.zip *.tar.gz
 
       - name: Create release or attach to it
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          zip="lcf_editor-${GITHUB_REF_NAME}.zip"
+          cat > release-notes.md <<EOF
+          **Downloads**
+
+          - \`lcf_editor-${GITHUB_REF_NAME}.zip\` — the Godot addons: the LCF Editor (with Windows and Linux binaries), the example plugin \`lcf_map_notes\` and the showcase plugins \`lcf_pixel_movement\` and \`lcf_shaders\`. Unpack into your Godot project (the \`addons\` folder goes next to \`project.godot\`) and enable the plugins under *Project → Project Settings → Plugins*.
+          - \`easyrpg-player-patched-windows-x64.zip\`, \`easyrpg-player-patched-linux-x86_64.zip\` — EasyRPG Player with this repository's patches (pixel movement, screen shaders), needed by the showcase plugins. Unpack the \`easyrpg-player\` folder into the same Godot project and Test Play finds it. The Linux build is for Ubuntu 24.04 and similar systems. It is a prototype, not an official EasyRPG release.
+          - \`easyrpg-player-patched-source.tar.gz\` — the complete source of the patched Player (GPLv3).
+
+          EOF
+          files=("lcf_editor-${GITHUB_REF_NAME}.zip" easyrpg-player-patched-*.zip easyrpg-player-patched-source.tar.gz)
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "$zip" --repo "$GITHUB_REPOSITORY" --clobber
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" "$zip" \
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" --notes-file release-notes.md \
               --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes --prerelease
           fi

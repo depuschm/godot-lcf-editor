@@ -30,18 +30,25 @@ A GLSL post-process pass over the finished frame, chosen per map (applied on top
 
 **Limits of the prototype:** SDL2 builds on desktop only (not SDL3, which is now the Player's default on desktop, nor the console ports); one pass; the bilinear scaling option is skipped while a shader is on; `@shader` and `@shader_param` are not stored in save games; when the Player starts without a game (the game browser), the game's shaders need a restart because the renderer is already chosen.
 
+## Download
+
+Every [release](https://github.com/depuschm/godot-lcf-editor/releases) has the patched Player ready to run for Windows (64-bit) and Linux (built on Ubuntu 24.04), with the complete source as `easyrpg-player-patched-source.tar.gz`. Unpack the zip's `easyrpg-player` folder into the Godot project you use the editor in, and Test Play runs it when no other Player is chosen in its settings. The builds come from CI (`.github/workflows/build.yml`), which runs the tests below with them on both systems; the version string ends in “(godot-lcf-editor patches)”.
+
 ## Building
 
 ```bash
 runtime/easyrpg-player/build.sh            # prints the path of the built easyrpg-player
 ```
 
-The script clones EasyRPG Player at the commit the patches are made for (pinned in the script), applies them and builds with CMake. It needs the Player's libraries; on Debian/Ubuntu:
+The script clones EasyRPG Player and liblcf at the commits the patches are made for (pinned in the script), applies the patches and builds with CMake; `package.sh` then makes the download zips. It needs the Player's libraries; on Debian/Ubuntu:
 
 ```bash
 sudo apt install libsdl2-dev libpixman-1-dev libpng-dev libfmt-dev libfreetype-dev \
-    libharfbuzz-dev nlohmann-json3-dev libinih-dev libexpat1-dev libicu-dev
+    libharfbuzz-dev nlohmann-json3-dev libinih-dev libexpat1-dev libicu-dev \
+    libmpg123-dev libsndfile1-dev libvorbis-dev libopusfile-dev libspeexdsp-dev libasound2-dev
 ```
+
+On Windows the script runs in Git Bash with Visual Studio and [vcpkg](https://vcpkg.io); the CI workflow shows the libraries to install and the `PLAYER_CMAKE_ARGS` to pass.
 
 Then choose the built Player under **Test Play → Settings…** in the editor.
 

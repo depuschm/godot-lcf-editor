@@ -41,7 +41,17 @@ func _run() -> void:
 	var at := args.find("--start-map-id")
 	_check("--new-game" in args and at > 0 and args.slice(at, at + 5) == PackedStringArray(["--start-map-id", "3", "--start-position", "9", "11"]), "“Play from here” starts a new game on that map and cell")
 	tp.player_path = ""
+	tp.bundled_dir = dir.path_join("no-bundle")
 	_check(tp.check_player() != "", "without a Player it asks for one")
+	tp.bundled_dir = dir.path_join("bundle")
+	DirAccess.make_dir_recursive_absolute(tp.bundled_dir)
+	var bundled := FileAccess.open(tp.bundled_dir.path_join("easyrpg-player"), FileAccess.WRITE)
+	bundled.close()
+	_check(tp.get_player() == tp.bundled_dir.path_join("easyrpg-player") and tp.check_player() == "", "it finds a Player in the project's easyrpg-player folder")
+	tp.player_path = "/elsewhere/easyrpg-player"
+	_check(tp.get_player() == "/elsewhere/easyrpg-player", "a chosen Player comes first")
+	DirAccess.remove_absolute(tp.bundled_dir.path_join("easyrpg-player"))
+	tp.bundled_dir = dir.path_join("no-bundle")
 	tp.player_path = dir.path_join("missing-player")
 	_check("not found" in tp.check_player() and tp.start(dir) != OK and not tp.is_running(), "a missing Player is reported, nothing starts")
 
