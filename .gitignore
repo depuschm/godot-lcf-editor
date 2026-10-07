@@ -33,4 +33,4 @@ docs/*.toc
 docs/*.pdf
 
 # A patched EasyRPG Player unpacked for Test Play (runtime/easyrpg-player)
-easyrpg-player/
+/easyrpg-player/
