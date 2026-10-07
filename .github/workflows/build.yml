@@ -218,7 +218,7 @@ jobs:
           gh release download --repo pal1000/mesa-dist-win --pattern "*release-msvc.7z" --dir ../mesa
           7z x -o../mesa ../mesa/*release-msvc.7z > /dev/null
           mkdir -p ../player-gl
-          cp "$(cygpath -u "$PATCHED_PLAYER")" ../player-gl/
+          cp "$(cygpath -u "$PATCHED_PLAYER")" ../player-gl/easyrpg-player.exe
           cp ../mesa/x64/*.dll ../player-gl/
           echo "GL_PLAYER=$(cygpath -w "$(cd ../player-gl && pwd)/easyrpg-player.exe")" >> "$GITHUB_ENV"
           echo "GALLIUM_DRIVER=llvmpipe" >> "$GITHUB_ENV"
