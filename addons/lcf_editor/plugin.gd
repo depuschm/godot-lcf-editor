@@ -54,6 +54,17 @@ func _get_plugin_name() -> String:
 	return "LCF Editor"
 
 
+func _get_unsaved_status(for_scene: String) -> String:
+	if for_scene == "" and database_view and database_view.is_modified():
+		return "The RPG Maker database has unsaved changes. Save them before closing?"
+	return ""
+
+
+func _save_external_data() -> void:
+	if database_view:
+		database_view.save_if_safe()
+
+
 func _get_plugin_icon() -> Texture2D:
 	return EditorInterface.get_editor_theme().get_icon("TileMapLayer", "EditorIcons")
 

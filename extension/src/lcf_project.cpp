@@ -3,6 +3,7 @@
 #include "database_sections.h"
 
 #include <godot_cpp/classes/project_settings.hpp>
+#include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/core/class_db.hpp>
 
 #include <lcf/ldb/reader.h>
@@ -14,11 +15,15 @@
 #include <lcf/rpg/treemap.h>
 #include <lcf/saveopt.h>
 
+#include <lcf/log_handler.h>
+
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <fstream>
 #include <map>
+#include <sstream>
+#include <iterator>
 
 namespace fs = std::filesystem;
 using namespace godot;
@@ -64,6 +69,17 @@ std::map<std::string, std::string> read_ini(const fs::path &path) {
 	return values;
 }
 
+String globalize(const String &path) {
+	if (path.begins_with("res://") || path.begins_with("user://")) {
+		return ProjectSettings::get_singleton()->globalize_path(path);
+	}
+	return path;
+}
+
+fs::path to_path(const String &path) {
+	return fs::u8path(globalize(path).utf8().get_data());
+}
+
 const char *map_type_name(int type) {
 	switch (type) {
 		case lcf::rpg::TreeMap::MapType_root:
@@ -105,11 +121,10 @@ fs::path LcfProject::find_file(const std::string &name) const {
 
 Error LcfProject::load(const String &project_dir) {
 	last_error = String();
-	String absolute = project_dir;
-	if (project_dir.begins_with("res://") || project_dir.begins_with("user://")) {
-		absolute = ProjectSettings::get_singleton()->globalize_path(project_dir);
-	}
-	dir = fs::u8path(absolute.utf8().get_data());
+	const String absolute = globalize(project_dir);
+	dir = to_path(project_dir);
+	db_modified = false;
+	last_backup = String();
 
 	const fs::path ldb_path = find_file("RPG_RT.ldb");
 	const fs::path lmt_path = find_file("RPG_RT.lmt");
@@ -403,6 +418,199 @@ String LcfProject::get_event_command_name(int code) {
 	return name ? String(name) : String();
 }
 
+Error LcfProject::set_database_entry_xml(const String &section, int index, const String &xml) {
+	last_error = String();
+	if (!db) {
+		last_error = "No project loaded";
+		return ERR_UNCONFIGURED;
+	}
+	std::string error;
+	if (!lcf_db::set_entry_xml(*db, section.utf8().get_data(), index, xml.utf8().get_data(), error)) {
+		last_error = to_godot(error);
+		return ERR_PARSE_ERROR;
+	}
+	db_modified = true;
+	return OK;
+}
+
+Error LcfProject::set_database_field(const String &section, int index, const PackedInt32Array &path, const String &value) {
+	last_error = String();
+	if (!db) {
+		last_error = "No project loaded";
+		return ERR_UNCONFIGURED;
+	}
+	std::vector<int> steps;
+	for (int64_t i = 0; i < path.size(); ++i) {
+		steps.push_back(path[i]);
+	}
+	std::string error;
+	if (!lcf_db::set_field(*db, section.utf8().get_data(), index, steps, value.utf8().get_data(), error)) {
+		last_error = to_godot(error);
+		return ERR_INVALID_PARAMETER;
+	}
+	db_modified = true;
+	return OK;
+}
+
+bool LcfProject::is_database_modified() const {
+	return db_modified;
+}
+
+String LcfProject::get_last_backup() const {
+	return last_backup;
+}
+
+std::unique_ptr<lcf::rpg::Database> LcfProject::read_database(const fs::path &path) const {
+	std::ifstream in(path, std::ios::binary);
+	if (!in) {
+		return nullptr;
+	}
+	lcf::LogHandler::SetHandler([](lcf::LogHandler::Level, std::string_view, void *) {});
+	auto result = lcf::LDB_Reader::Load(in, encoding);
+	lcf::LogHandler::SetHandler(nullptr);
+	return result;
+}
+
+Error LcfProject::export_database(const String &path) const {
+	if (!db) {
+		last_error = "No project loaded";
+		return ERR_UNCONFIGURED;
+	}
+	std::ofstream out(to_path(path), std::ios::binary);
+	if (!out || !lcf::LDB_Reader::Save(out, *db, encoding)) {
+		last_error = "Could not write " + path;
+		return ERR_FILE_CANT_WRITE;
+	}
+	return OK;
+}
+
+Dictionary LcfProject::check_round_trip() const {
+	Dictionary result;
+	const fs::path ldb_path = find_file("RPG_RT.ldb");
+	std::ifstream in(ldb_path, std::ios::binary);
+	if (ldb_path.empty() || !in) {
+		return result;
+	}
+	const std::string original((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+
+	PackedStringArray notes;
+	lcf::LogHandler::SetHandler([](lcf::LogHandler::Level, std::string_view message, void *out) {
+		static_cast<PackedStringArray *>(out)->push_back(String::utf8(message.data(), int(message.size())));
+	}, &notes);
+	std::istringstream source(original);
+	auto fresh = lcf::LDB_Reader::Load(source, encoding);
+	lcf::LogHandler::SetHandler(nullptr);
+	if (!fresh) {
+		return result;
+	}
+	std::ostringstream out;
+	lcf::LDB_Reader::Save(out, *fresh, encoding);
+	const std::string saved = out.str();
+
+	int64_t first = -1;
+	for (size_t i = 0; i < std::min(original.size(), saved.size()); ++i) {
+		if (original[i] != saved[i]) {
+			first = int64_t(i);
+			break;
+		}
+	}
+	if (first < 0 && original.size() != saved.size()) {
+		first = int64_t(std::min(original.size(), saved.size()));
+	}
+	result["identical"] = original == saved;
+	result["original_size"] = int64_t(original.size());
+	result["saved_size"] = int64_t(saved.size());
+	result["first_difference"] = first;
+	result["notes"] = notes;
+	return result;
+}
+
+Error LcfProject::revert_database() {
+	const fs::path ldb_path = find_file("RPG_RT.ldb");
+	auto fresh = ldb_path.empty() ? nullptr : read_database(ldb_path);
+	if (!fresh) {
+		last_error = "Could not read RPG_RT.ldb";
+		return ERR_FILE_CANT_READ;
+	}
+	db = std::move(fresh);
+	db_modified = false;
+	return OK;
+}
+
+Error LcfProject::save_database(const String &backup_dir) {
+	last_error = String();
+	if (!db) {
+		last_error = "No project loaded";
+		return ERR_UNCONFIGURED;
+	}
+	if (!db_modified) {
+		return OK;
+	}
+	const fs::path ldb_path = find_file("RPG_RT.ldb");
+	if (ldb_path.empty()) {
+		last_error = "RPG_RT.ldb not found";
+		return ERR_FILE_NOT_FOUND;
+	}
+	std::error_code ec;
+
+	// 1. Backup of the file on disk.
+	last_backup = String();
+	if (!backup_dir.is_empty()) {
+		const fs::path backups = to_path(backup_dir);
+		fs::create_directories(backups, ec);
+		const String stamp = Time::get_singleton()->get_datetime_string_from_system().replace(":", "-").replace("T", "_");
+		const fs::path backup = backups / fs::u8path(("RPG_RT.ldb." + stamp).utf8().get_data());
+		if (!fs::copy_file(ldb_path, backup, fs::copy_options::overwrite_existing, ec)) {
+			last_error = "Could not create backup in " + backup_dir + ": " + to_godot(ec.message());
+			return ERR_FILE_CANT_WRITE;
+		}
+		last_backup = to_godot(backup.u8string());
+		std::vector<fs::path> old;
+		for (const auto &entry : fs::directory_iterator(backups, ec)) {
+			if (entry.path().filename().u8string().rfind("RPG_RT.ldb.", 0) == 0) {
+				old.push_back(entry.path());
+			}
+		}
+		std::sort(old.begin(), old.end());
+		for (size_t i = 0; i + 20 < old.size(); ++i) {
+			fs::remove(old[i], ec);
+		}
+	}
+
+	// 2. Write a temporary file next to the original.
+	lcf::rpg::Database next = *db;
+	lcf::LDB_Reader::PrepareSave(next);
+	fs::path tmp = ldb_path;
+	tmp += ".tmp";
+	{
+		std::ofstream out(tmp, std::ios::binary);
+		if (!out || !lcf::LDB_Reader::Save(out, next, encoding)) {
+			fs::remove(tmp, ec);
+			last_error = "Could not write " + to_godot(tmp.u8string());
+			return ERR_FILE_CANT_WRITE;
+		}
+	}
+
+	// 3. Read it back and compare with what we meant to write.
+	auto check = read_database(tmp);
+	if (!check || !(*check == next)) {
+		fs::remove(tmp, ec);
+		last_error = "The written database did not read back identically; the original file was not touched.";
+		return ERR_FILE_CORRUPT;
+	}
+
+	// 4. Replace the original.
+	fs::rename(tmp, ldb_path, ec);
+	if (ec) {
+		fs::remove(tmp, ec);
+		last_error = "Could not replace RPG_RT.ldb: " + to_godot(ec.message());
+		return ERR_FILE_CANT_WRITE;
+	}
+	*db = std::move(next);
+	db_modified = false;
+	return OK;
+}
+
 void LcfProject::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("load", "project_dir"), &LcfProject::load);
 	ClassDB::bind_method(D_METHOD("is_loaded"), &LcfProject::is_loaded);
@@ -421,4 +629,12 @@ void LcfProject::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_database_entries", "section"), &LcfProject::get_database_entries);
 	ClassDB::bind_method(D_METHOD("get_database_entry_xml", "section", "index"), &LcfProject::get_database_entry_xml);
 	ClassDB::bind_static_method("LcfProject", D_METHOD("get_event_command_name", "code"), &LcfProject::get_event_command_name);
+	ClassDB::bind_method(D_METHOD("set_database_entry_xml", "section", "index", "xml"), &LcfProject::set_database_entry_xml);
+	ClassDB::bind_method(D_METHOD("set_database_field", "section", "index", "path", "value"), &LcfProject::set_database_field);
+	ClassDB::bind_method(D_METHOD("is_database_modified"), &LcfProject::is_database_modified);
+	ClassDB::bind_method(D_METHOD("save_database", "backup_dir"), &LcfProject::save_database);
+	ClassDB::bind_method(D_METHOD("get_last_backup"), &LcfProject::get_last_backup);
+	ClassDB::bind_method(D_METHOD("export_database", "path"), &LcfProject::export_database);
+	ClassDB::bind_method(D_METHOD("revert_database"), &LcfProject::revert_database);
+	ClassDB::bind_method(D_METHOD("check_round_trip"), &LcfProject::check_round_trip);
 }

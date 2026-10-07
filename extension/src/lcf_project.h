@@ -73,6 +73,40 @@ public:
 	// "ShowMessage", "CallCommonEvent", ... for an event command code; empty if unknown.
 	static String get_event_command_name(int code);
 
+	// --- editing ---------------------------------------------------------------
+
+	// Replaces one entry with edited XML (same format as get_database_entry_xml).
+	// Nothing changes if the XML does not parse cleanly; see get_last_error().
+	Error set_database_entry_xml(const String &section, int index, const String &xml);
+
+	// Sets one field of an entry from plain text ("T"/"F", "42", "1 2 3", any string).
+	// `path` lists child-element indices below the entry's root in
+	// get_database_entry_xml, e.g. [0] for the first field.
+	Error set_database_field(const String &section, int index, const PackedInt32Array &path, const String &value);
+
+	// True when the database has changes that are not saved yet.
+	bool is_database_modified() const;
+
+	// Saves RPG_RT.ldb if it was modified: copies the current file into
+	// `backup_dir` (keeping the newest 20), writes a temporary file, reads it back
+	// to verify it, then replaces the original. Increments the save counter like
+	// RPG Maker does. An empty backup_dir skips the backup.
+	Error save_database(const String &backup_dir);
+
+	// Path of the backup made by the last save_database(), or empty.
+	String get_last_backup() const;
+
+	// Writes the database as it is now (no backup, no save counter) to `path`.
+	Error export_database(const String &path) const;
+
+	// Drops unsaved changes by reading RPG_RT.ldb again.
+	Error revert_database();
+
+	// Checks whether saving the database as loaded would reproduce RPG_RT.ldb byte
+	// for byte: { identical, original_size, saved_size, first_difference, notes }.
+	// `notes` lists what liblcf reported while reading (e.g. skipped unknown data).
+	Dictionary check_round_trip() const;
+
 protected:
 	static void _bind_methods();
 
@@ -80,13 +114,16 @@ private:
 	Error fail(const String &message);
 	std::filesystem::path find_file(const std::string &name) const;
 	std::unique_ptr<lcf::rpg::Map> load_map(int map_id);
+	std::unique_ptr<lcf::rpg::Database> read_database(const std::filesystem::path &path) const;
 
 	std::filesystem::path dir;
 	std::string encoding;
 	std::string game_title;
 	std::unique_ptr<lcf::rpg::Database> db;
 	std::unique_ptr<lcf::rpg::TreeMap> tree;
-	String last_error;
+	mutable String last_error;
+	bool db_modified = false;
+	String last_backup;
 };
 
 } // namespace godot

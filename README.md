@@ -2,7 +2,7 @@
 
 Godot editor for RPG Maker 2000/2003 projects (LCF format), built on [liblcf](https://github.com/EasyRPG/liblcf). Extensible through plugins, playtested with [EasyRPG Player](https://github.com/EasyRPG/Player).
 
-> **Status: early prototype.** The editor plugin opens an existing RPG Maker 2000/2003 project, renders its maps and lets you browse its whole database inside Godot. Editing comes next — see the [roadmap](#roadmap).
+> **Status: early prototype.** The editor plugin opens an existing RPG Maker 2000/2003 project, renders its maps, and lets you browse and edit its whole database inside Godot. Map and event editing come next — see the [roadmap](#roadmap). Keep backups of your projects while trying it.
 
 ## Vision
 
@@ -28,7 +28,10 @@ The full vision, the existing landscape and the options considered are in [`docs
 - Detects engine version (2000/2003) and text encoding (from `RPG_RT.ini` or by analysing the database).
 - Shows the map tree, including areas, and basic facts per map.
 - Selecting a map opens it in the **LCF Editor** screen (next to 2D, 3D and Script), **Map** tab: lower and upper layer with the project's chipset, including ground autotiles, water with shores and deep-water edges, and event markers. Zoom with the mouse wheel, pan with the middle or right mouse button; the status line shows the tile IDs under the cursor.
-- The **Database** tab browses every section of the database (actors, classes, skills, items, enemies, troops, states, vocabulary, system, common events, switches, variables, …), read-only. Every field of the selected entry is listed, nested structures can be expanded, event commands appear by name with their indentation, and references such as `class_id` or `switch_id` show the name they point to. Fields come straight from liblcf's own description of the format, so new fields (including Maniacs and EasyRPG extensions) appear automatically.
+- The **Database** tab shows every section of the database (actors, classes, skills, items, enemies, troops, states, vocabulary, system, common events, switches, variables, …). Every field of the selected entry is listed, nested structures can be expanded, event commands appear by name with their indentation, and references such as `class_id` or `switch_id` show the name they point to. Fields come straight from liblcf's own description of the format, so new fields (including Maniacs and EasyRPG extensions) appear automatically.
+- **Editing the database:** double-click a field to change it (checkbox for yes/no, number box, text field). **Save** writes `RPG_RT.ldb`; **Revert** drops unsaved changes, and Godot warns about unsaved changes when it closes. Event commands are still read-only.
+- **Safe saving:** before every save the current file is copied to a backup (the newest 20 are kept in Godot's user data folder, under `backups/`). The new database is written to a temporary file, read back and compared before it replaces the original. The save counter is increased like RPG Maker does.
+- **Byte-exact round trips:** databases saved by RPG Maker 2000 and 2003 (and PowerMode2003) are written back byte for byte when nothing was changed, and every entry passes through the editor without changing a byte (tested with [EasyRPG's TestGame](https://github.com/EasyRPG/TestGame), 760–890 entries per game). Databases from the Maniacs Patch or EasyRPG can contain empty or unknown fields that liblcf leaves out; the editor detects this when a project opens, shows a warning, and asks before saving.
 - Chipsets in PNG, BMP and RPG Maker's XYZ format, with palette colour 0 transparent as in RPG Maker.
 - Exposes everything to GDScript through `LcfProject` and `LcfChipset`:
 
@@ -44,11 +47,11 @@ if project.load("C:/Games/MyRpg") == OK:
         print(entry.id, ": ", entry.name)
 ```
 
-![The Database tab: sections with entry counts on the left, the demo's common event "Heal party" selected, and its fields and eleven event commands (Comment, ConditionalBranch, ShowMessage, FullHeal, PlaySound, …) listed on the right.](docs/images/editor-database.png)
+![The Database tab with the demo's actor "Hero" selected: its fields on the right, the title just changed to "Knight of the Lake", "Unsaved changes" with Save and Revert buttons at the top, references such as class_id shown as "1 · Warrior", and the number editor open for final_level.](docs/images/editor-database.png)
 
 The autotile and water composition (`extension/src/tile_rules.h`) is our own implementation of the chipset format; it was checked against EasyRPG Player's reference tables for every ground autotile, water combination and animation frame.
 
-**Not yet:** editing and saving, RTP graphics (chipsets must be inside the project), tile animation.
+**Not yet:** editing maps and event commands, adding or removing database entries, RTP graphics (chipsets must be inside the project), tile animation.
 
 ## Repository layout
 
@@ -58,8 +61,9 @@ addons/lcf_editor/         Editor plugin (GDScript) + the GDExtension's binaries
 extension/                 C++ GDExtension wrapping liblcf (CMake)
 thirdparty/liblcf/         git submodule – RPG Maker 2000/2003 file formats
 thirdparty/godot-cpp/      git submodule – Godot C++ bindings
+thirdparty/libexpat/       git submodule – XML parser liblcf uses to read edited entries
 demo/                      Tiny generated test project with its own chipset (no RPG Maker assets)
-tests/                     Headless smoke test and a map-to-PNG renderer
+tests/                     Headless smoke and round-trip tests, a map-to-PNG renderer
 tools/                     Demo generators: chipset (Python), maps from text grids (C++)
 docs/                      Vision document and README images
 ```
@@ -94,6 +98,16 @@ It loads `demo/` through the extension and prints the map tree. Tested with Godo
 
 In a fresh checkout, run `godot --headless --path . --import` once first. That very first headless import can abort while Godot registers the extension (godot-cpp's own example does the same); simply run it again.
 
+### Round-trip test
+
+Checks byte-exact saving, the edit path for every entry, a real edit with backup and the save counter. It always works on a copy in Godot's user data folder, never on the project itself:
+
+```bash
+godot --headless --path . --script res://tests/test_roundtrip.gd -- /path/to/RPG/project
+```
+
+Without a path it uses `demo/`.
+
 ### Rendering a map to PNG
 
 ```bash
@@ -118,7 +132,7 @@ cmake -S tools -B build-tools && cmake --build build-tools
 | M1 | liblcf in Godot: load a project ✅ |
 | M2 | Map view with correct chipsets and autotiles ✅ |
 | M3a | Database browser ✅ |
-| M3b | Database editing and safe saving (backups, byte-identical round trip) |
+| M3b | Database editing and safe saving (backups, byte-identical round trip) ✅ |
 | M4 | Event editor with data-driven command dialogs |
 | M5 | Plugin API for the editor |
 | M6 | Test Play with EasyRPG Player; runtime extension mechanism |
@@ -130,6 +144,6 @@ Ideas, issues and pull requests are welcome. Please never commit RPG Maker RTP a
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Third-party components: liblcf (MIT), godot-cpp (MIT).
+MIT — see [LICENSE](LICENSE). Third-party components: liblcf (MIT), godot-cpp (MIT), libexpat (MIT).
 
 This project is not affiliated with Kadokawa, Gotcha Gotcha Games or the EasyRPG project. RPG Maker is a trademark of its respective owners.

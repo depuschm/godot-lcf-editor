@@ -166,6 +166,15 @@ int main(int argc, char **argv) {
 	db.system.ldb_id = 2003;
 	db.system.title_name = DBString("");
 
+	// References returned by `named` must stay valid while more entries are added.
+	db.classes.reserve(16);
+	db.skills.reserve(16);
+	db.items.reserve(16);
+	db.actors.reserve(16);
+	db.enemies.reserve(16);
+	db.troops.reserve(16);
+	db.commonevents.reserve(16);
+
 	auto named = [](auto &list, const char *name) -> auto & {
 		list.emplace_back();
 		list.back().ID = int(list.size());
@@ -277,6 +286,10 @@ int main(int argc, char **argv) {
 	db.terms.encounter = DBString(" appeared!");
 	db.terms.victory = DBString("Victory!");
 	db.terms.gold = DBString("G");
+	// Fill in the defaults RPG Maker always writes (e.g. actor stat curves), exactly as
+	// liblcf does when loading, so the file is in the editor's normal form and saves
+	// back byte for byte.
+	for (auto &actor : db.actors) actor.Setup(true);
 	if (!LDB_Reader::Save(dir + "/RPG_RT.ldb", db, kEncoding)) return 1;
 
 	rpg::TreeMap tree;

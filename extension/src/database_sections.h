@@ -35,6 +35,18 @@ bool entry(const lcf::rpg::Database &db, const std::string &key, int index, Entr
 // The entry as liblcf XML, with every field named. Empty if out of range.
 std::string entry_xml(const lcf::rpg::Database &db, const std::string &key, int index);
 
+// Replaces entry `index` with the given XML (same format as entry_xml). The entry is
+// parsed into a fresh structure by liblcf's XML reader; it keeps its ID. On any parse
+// problem nothing changes and `error` explains why.
+bool set_entry_xml(lcf::rpg::Database &db, const std::string &key, int index, const std::string &xml, std::string &error);
+
+// Sets the text of one field of an entry. `path` holds child-element indices below
+// the entry's root element (as in entry_xml), e.g. {0} for the first field or
+// {16, 0, 2} for a field inside a nested structure. Only fields without child
+// elements can be set. The value is plain text (escaped here), e.g. "T", "42",
+// "1 2 3" or any string.
+bool set_field(lcf::rpg::Database &db, const std::string &key, int index, const std::vector<int> &path, const std::string &value, std::string &error);
+
 // Name of an event command code ("ShowMessage", ...) or nullptr if unknown.
 const char *command_name(int code);
 
