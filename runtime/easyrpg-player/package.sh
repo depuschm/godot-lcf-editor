@@ -19,7 +19,7 @@ BASE=$(sed -n 's/^BASE=//p' "$HERE/build.sh")
 LIBLCF=$(sed -n 's/^LIBLCF=//p' "$HERE/build.sh")
 
 case "$(uname -s)" in
-	MINGW*|MSYS*|CYGWIN*) PLATFORM=windows-x64; NAME=easyrpg-player.exe ;;
+	MINGW*|MSYS*|CYGWIN*) PLATFORM=windows-x64; NAME=Player.exe ;;  # packed as easyrpg-player.exe
 	*) PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"; NAME=easyrpg-player ;;
 esac
 shopt -s globstar nullglob
@@ -33,7 +33,7 @@ STAGE="$OUT/stage-$PLATFORM"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/easyrpg-player/patches"
 DIR="$STAGE/easyrpg-player"
-cp "$EXE" "$DIR/"
+if [ "$PLATFORM" = windows-x64 ]; then cp "$EXE" "$DIR/easyrpg-player.exe"; else cp "$EXE" "$DIR/easyrpg-player"; fi
 cp "$PLAYER/COPYING" "$DIR/COPYING.txt"
 cp "$HERE"/*.patch "$DIR/patches/"
 touch "$DIR/.gdignore"  # Godot leaves the folder alone when it is inside a Godot project

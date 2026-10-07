@@ -48,7 +48,8 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPLAYER_TARGET_PLATFORM=SDL2 \
 cmake --build build --config Release --parallel "$(nproc 2>/dev/null || echo 4)" >&2
 # (bash globbing rather than find, which can be Windows' own find.exe in Git Bash)
 shopt -s globstar nullglob
-for exe in build/**/easyrpg-player.exe build/**/easyrpg-player; do
+# (Player.exe on Windows, easyrpg-player elsewhere)
+for exe in build/**/Player.exe build/**/easyrpg-player.exe build/**/easyrpg-player; do
 	if [ -f "$exe" ] && [[ "$exe" != *CMakeFiles* ]]; then
 		echo "$WORK/Player/$exe"
 		exit 0

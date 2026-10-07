@@ -91,10 +91,10 @@ func get_player() -> String:
 	return player_path if player_path != "" else find_bundled_player()
 
 
-## The Player in bundled_dir (easyrpg-player.exe or easyrpg-player), or "".
+## The Player in bundled_dir (easyrpg-player.exe, Player.exe or easyrpg-player), or "".
 func find_bundled_player() -> String:
 	var dir := ProjectSettings.globalize_path(bundled_dir)
-	for file in ["easyrpg-player.exe", "easyrpg-player"]:
+	for file in ["easyrpg-player.exe", "Player.exe", "easyrpg-player"]:
 		if FileAccess.file_exists(dir.path_join(file)):
 			return dir.path_join(file)
 	return ""
