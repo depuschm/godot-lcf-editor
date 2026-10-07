@@ -66,10 +66,14 @@ jobs:
           "../godot/${{ matrix.godot }}" --headless --path . --import
 
       - name: Smoke test
-        run: '"../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_load_demo.gd'
+        run: |
+          "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_load_demo.gd | tee smoke.log
+          echo "::notice title=Smoke test (${{ matrix.name }})::$(grep -cE '^- |^  ' smoke.log) map lines, result: $(tail -n 1 smoke.log)"
 
       - name: Round-trip test (demo)
-        run: '"../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_roundtrip.gd'
+        run: |
+          "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_roundtrip.gd | tee roundtrip.log
+          echo "::notice title=Round trip demo (${{ matrix.name }})::$(grep -c '  ok ' roundtrip.log) checks ok, result: $(tail -n 1 roundtrip.log)"
 
       - name: Round-trip test (EasyRPG TestGame)
         run: |
@@ -78,8 +82,9 @@ jobs:
             echo "::group::TestGame-$game"
             # pwd -W gives a Windows path under Git Bash; plain pwd elsewhere.
             dir="$(cd ../TestGame/TestGame-$game && (pwd -W 2>/dev/null || pwd))"
-            "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_roundtrip.gd -- "$dir"
+            "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_roundtrip.gd -- "$dir" | tee game.log
             echo "::endgroup::"
+            echo "::notice title=Round trip TestGame-$game (${{ matrix.name }})::$(grep -c '  ok ' game.log) checks ok, $(grep -c 'note ' game.log) notes, result: $(tail -n 1 game.log)"
           done
 
       - name: Editor loads the plugin
