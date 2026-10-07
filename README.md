@@ -4,7 +4,7 @@
 
 Godot editor for RPG Maker 2000/2003 projects (LCF format), built on [liblcf](https://github.com/EasyRPG/liblcf). Extensible through plugins, playtested with [EasyRPG Player](https://github.com/EasyRPG/Player).
 
-> **Status: early prototype.** The editor plugin opens an existing RPG Maker 2000/2003 project, lets you paint its maps, edit its events and their commands, and browse and edit its whole database inside Godot. **Test Play** runs it in EasyRPG Player, and other Godot plugins can extend both the editor and, through comment commands, the game ([writing plugins](#writing-plugins)). Showcase plugins come next — see the [roadmap](#roadmap). Keep backups of your projects while trying it.
+> **Status: early prototype.** The editor plugin opens an existing RPG Maker 2000/2003 project, lets you paint its maps, edit its events and their commands, and browse and edit its whole database inside Godot. **Test Play** runs it in EasyRPG Player, and other Godot plugins can extend both the editor and, through comment commands, the game ([writing plugins](#writing-plugins)). The first showcase plugin, [pixel-perfect movement](#showcase-pixel-movement), works end to end: editor half in Godot, runtime half as a patch for EasyRPG Player. Shader support comes next — see the [roadmap](#roadmap). Keep backups of your projects while trying it.
 
 ## Vision
 
@@ -165,7 +165,20 @@ LcfCommands.register({
 # Inserting it with the dialog stores the event comment  @pixel_move 10005, 4, -2
 ```
 
-Arguments are numbers or (with `"type": "string"`) quoted strings, read the way EasyRPG Player reads them. The editor already offers EasyRPG Player's own comment commands this way: **Log Message** (`@easyrpg_output`, shown in the Player's log and on screen; the screenshot above comes from one) and **Add Numbers** (`@easyrpg_add`). Settings that are not commands, such as per-event hitboxes, go into the plugin's data file (`lcf-plugins/<id>.json`), which the runtime half reads from the game folder.
+Arguments are numbers or (with `"type": "string"`) quoted strings, read the way EasyRPG Player reads them. The editor already offers EasyRPG Player's own comment commands this way: **Log Message** (`@easyrpg_output`, shown in the Player's log and on screen; the screenshot above comes from one) and **Add Numbers** (`@easyrpg_add`). Settings that are not commands go into the plugin's data file (`lcf-plugins/<id>.json`), which the runtime half reads from the game folder, or, when they belong to one event page, into a comment at the top of the page so they travel with the event. The [pixel movement showcase](#showcase-pixel-movement) uses all three.
+
+## Showcase: pixel movement
+
+The first feature built the way the vision describes — an editor half and a runtime half — is pixel-perfect movement: the hero walks in pixel steps (also diagonally) and collides through a hitbox instead of moving tile by tile.
+
+![The editor with the Pixel Movement plugin: the town map with the Hitboxes tool selected, showing the villager's slim custom hitbox (cyan) and the hero's hitbox under the mouse (yellow), and the villager's event editor with the Hitbox panel (Custom hitbox for page 1: X 3, Y 4, Width 10, Height 12, with a preview of the box in its tile).](docs/images/editor-pixel-movement.png)
+
+- **Editor half** — [`addons/lcf_pixel_movement`](addons/lcf_pixel_movement), an ordinary plugin built on the plugin API: a **Pixel Movement** tab turns it on for the game and sets the hero's hitbox (stored as plugin data, `lcf-plugins/pixel_movement.json`); a **Hitbox** panel in the event editor gives an event page its own hitbox (stored as a `@pixel_hitbox x, y, w, h` comment at the top of the page, so it travels with the event); the **Hitboxes** map tool shows them all; and the comment commands **Pixel Movement On/Off** and **Move by Pixels** appear under *Insert…*.
+- **Runtime half** — [`runtime/easyrpg-player`](runtime/easyrpg-player), a patch for EasyRPG Player (about 500 lines, GPLv3 like the Player) and a script that builds it. It reads exactly what the editor writes. Game logic stays tile based (the hero's tile is the one under the middle of its hitbox), so events, terrain, encounters and teleports work unchanged, and games without the setting play exactly as before.
+
+<p align="center"><img src="docs/images/game-pixel-movement.png" alt="The demo's town running in the patched EasyRPG Player: the hero (brown hair, blue tunic) stands between tiles next to the villager after walking diagonally." width="480"></p>
+
+Tests play scripted input in the patched Player and check the hero's position to the pixel against tile movement (map edges and water 2 px further thanks to the hitbox margin, diagonals, short taps, event hitboxes, touch triggers); CI builds the Player and runs them. The patch is a prototype to discuss with the EasyRPG team — the vision's aim is a plugin interface in the Player itself rather than a fork; see the [runtime README](runtime/easyrpg-player/README.md) for what it covers and its limits.
 
 ## Repository layout
 
@@ -173,11 +186,13 @@ Arguments are numbers or (with `"type": "string"`) quoted strings, read the way 
 project.godot              Open this folder in Godot 4.5+
 addons/lcf_editor/         Editor plugin (GDScript) + the GDExtension's binaries
 addons/lcf_map_notes/      Example plugin for the plugin API (map tool, event panel, tab, data, command)
+addons/lcf_pixel_movement/ Showcase plugin: pixel movement, editor half (hitboxes, settings, commands)
+runtime/easyrpg-player/    Runtime half of the showcases: patches for EasyRPG Player (GPLv3) and a build script
 extension/                 C++ GDExtension wrapping liblcf (CMake)
 thirdparty/liblcf/         git submodule – RPG Maker 2000/2003 file formats
 thirdparty/godot-cpp/      git submodule – Godot C++ bindings
 thirdparty/libexpat/       git submodule – XML parser liblcf uses to read edited entries
-demo/                      Tiny generated test project with its own chipset (no RPG Maker assets)
+demo/                      Tiny generated test project with its own chipset and characters (no RPG Maker assets)
 tests/                     Headless smoke and round-trip tests, a map-to-PNG renderer
 tools/                     Demo generators: chipset (Python), maps from text grids (C++)
 docs/                      Vision document and README images
@@ -256,6 +271,15 @@ Checks the Player's command line, the EasyRPG.ini setting, and starting, logging
 godot --headless --path . --script res://tests/test_test_play.gd -- /path/to/easyrpg-player
 ```
 
+### Pixel movement tests
+
+`test_pixel_movement.gd` checks the plugin's editor half (hitbox comments, the settings file, the Hitbox panel, the map tool, the commands). `test_pixel_runtime.gd` needs the patched EasyRPG Player ([build it](runtime/easyrpg-player/README.md#building)) and a display:
+
+```bash
+godot --headless --path . --script res://tests/test_pixel_movement.gd
+xvfb-run godot --headless --path . --script res://tests/test_pixel_runtime.gd -- /path/to/patched/easyrpg-player
+```
+
 ### Event editor test
 
 Drives the real map view, event editor and database view without a window, on a copy of `demo/`: creating, renaming, moving, copying and deleting events, page settings, pages, the command picker and generated dialogs, branches with and without Else, copy and paste of blocks, the undo states, and common event commands.
@@ -272,10 +296,11 @@ godot --headless --path . --script res://tests/render_map.gd -- res://demo 1 map
 
 ### Regenerating the demo project
 
-The demo chipset is drawn by a script (needs Pillow), and the maps are painted from the text grids in `tools/demo_maps/` (legend at the top of `tools/make_demo_project.cpp`):
+The demo chipset and characters are drawn by scripts (need Pillow), and the maps are painted from the text grids in `tools/demo_maps/` (legend at the top of `tools/make_demo_project.cpp`):
 
 ```bash
 python3 tools/make_demo_chipset.py demo/ChipSet/Demo.png
+python3 tools/make_demo_charset.py demo/CharSet/Demo.png
 cmake -S tools -B build-tools && cmake --build build-tools
 ./build-tools/make_demo_project demo tools/demo_maps
 ```
@@ -294,7 +319,8 @@ cmake -S tools -B build-tools && cmake --build build-tools
 | M4b | Data-driven dialogs for event commands, registered by plugins; block-aware editing ✅ |
 | M5 | Plugin API for the editor: map tools, event editor panels, tabs, map material, plugin data, signals; example plugin ✅ |
 | M6 | Test Play with EasyRPG Player; runtime extension mechanism (comment commands, plugin data) ✅ |
-| M7 | Showcase plugins: pixel-perfect movement, shader support |
+| M7a | Showcase: pixel-perfect movement — editor plugin and EasyRPG Player patch (prototype) ✅ |
+| M7b | Showcase: shader support |
 
 ## Contributing
 
@@ -302,6 +328,6 @@ Ideas, issues and pull requests are welcome. Please never commit RPG Maker RTP a
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Third-party components: liblcf (MIT), godot-cpp (MIT), libexpat (MIT).
+MIT — see [LICENSE](LICENSE). Third-party components: liblcf (MIT), godot-cpp (MIT), libexpat (MIT). The EasyRPG Player patches in [`runtime/easyrpg-player`](runtime/easyrpg-player) modify the GPLv3-licensed Player and are licensed GPLv3 or later like it; nothing else in the repository depends on them.
 
 This project is not affiliated with Kadokawa, Gotcha Gotcha Games or the EasyRPG project. RPG Maker is a trademark of its respective owners.

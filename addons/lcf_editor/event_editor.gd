@@ -215,12 +215,19 @@ func _set_page_field(path: PackedInt32Array, value: String) -> String:
 
 
 func _on_commands_changed(list: Array, action: String) -> void:
+	set_page_commands(list, action)
+
+
+## Replaces the shown page's command list (with undo); for plugin panels, e.g. to
+## keep a settings comment at the top of the page. Returns OK or an error.
+func set_page_commands(list: Array, action: String) -> Error:
 	var before := xml
 	if project.set_map_event_commands(map_id, event_id, page, list) != OK:
 		_status(project.get_last_error(), true)
-		return
+		return ERR_INVALID_PARAMETER
 	_changed(action, before)
 	commands.set_commands(project.get_map_event_commands(map_id, event_id, page))
+	return OK
 
 
 func _insert_page(copy_from: int) -> void:

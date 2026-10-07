@@ -1,0 +1,671 @@
+From e6703dad644eaa9828c2aa2b8332c2c9e8571fdb Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 7 Oct 2026 17:31:17 +0200
+Subject: [PATCH] Pixel movement prototype: hero hitbox, pixel steps, @pixel_
+ comment commands
+
+---
+ CMakeLists.txt           |   2 +
+ src/game_character.cpp   |   5 +-
+ src/game_character.h     |  11 ++
+ src/game_dynrpg.cpp      |   5 +
+ src/game_interpreter.cpp |   4 +-
+ src/game_player.cpp      | 103 +++++++++++++++
+ src/game_player.h        |   7 +
+ src/pixel_movement.cpp   | 278 +++++++++++++++++++++++++++++++++++++++
+ src/pixel_movement.h     |  88 +++++++++++++
+ 9 files changed, 499 insertions(+), 4 deletions(-)
+ create mode 100644 src/pixel_movement.cpp
+ create mode 100644 src/pixel_movement.h
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index aceff79..6f62ac1 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -279,6 +279,8 @@ add_library(${PROJECT_NAME} OBJECT
+ 	src/pending_message.h
+ 	src/pending_message.cpp
+ 	src/pixel_format.h
++	src/pixel_movement.cpp
++	src/pixel_movement.h
+ 	src/pixman_image_ptr.h
+ 	src/plane.cpp
+ 	src/plane.h
+diff --git a/src/game_character.cpp b/src/game_character.cpp
+index b9ade33..75f966e 100644
+--- a/src/game_character.cpp
++++ b/src/game_character.cpp
+@@ -59,6 +59,7 @@ void Game_Character::MoveTo(int map_id, int x, int y) {
+ 	SetX(x);
+ 	SetY(y);
+ 	SetRemainingStep(0);
++	SetPixelOffset(0, 0);
+ }
+ 
+ int Game_Character::GetJumpHeight() const {
+@@ -1091,7 +1092,7 @@ bool Game_Character::CalculateMoveRoute(const CalculateMoveRouteArgs& args) {
+ }
+ 
+ int Game_Character::GetSpriteX() const {
+-	int x = GetX() * SCREEN_TILE_SIZE;
++	int x = GetX() * SCREEN_TILE_SIZE + pixel_offset_x;
+ 
+ 	if (IsMoving()) {
+ 		int d = GetDirection();
+@@ -1107,7 +1108,7 @@ int Game_Character::GetSpriteX() const {
+ }
+ 
+ int Game_Character::GetSpriteY() const {
+-	int y = GetY() * SCREEN_TILE_SIZE;
++	int y = GetY() * SCREEN_TILE_SIZE + pixel_offset_y;
+ 
+ 	if (IsMoving()) {
+ 		int d = GetDirection();
+diff --git a/src/game_character.h b/src/game_character.h
+index 2549fe5..ca244f2 100644
+--- a/src/game_character.h
++++ b/src/game_character.h
+@@ -924,6 +924,15 @@ public:
+ 	static constexpr int GetDxFromDirection(int dir);
+ 	static constexpr int GetDyFromDirection(int dir);
+ 
++	/**
++	 * Pixel movement: how far the sprite is drawn from its tile, in sub-pixel units
++	 * (SCREEN_TILE_SIZE per tile, so 16 per pixel). Zero unless pixel movement moved
++	 * the character. Not part of save games.
++	 */
++	int GetPixelOffsetX() const { return pixel_offset_x; }
++	int GetPixelOffsetY() const { return pixel_offset_y; }
++	void SetPixelOffset(int x, int y) { pixel_offset_x = x; pixel_offset_y = y; }
++
+ protected:
+ 	explicit Game_Character(Type type, lcf::rpg::SaveMapEventBase* d);
+ 	/** Check for and fix incorrect data after loading save game */
+@@ -952,6 +961,8 @@ protected:
+ 
+ 	Type _type = {};
+ 	lcf::rpg::SaveMapEventBase* _data = nullptr;
++	int pixel_offset_x = 0;
++	int pixel_offset_y = 0;
+ };
+ 
+ template <typename T>
+diff --git a/src/game_dynrpg.cpp b/src/game_dynrpg.cpp
+index bb4a626..375bdb7 100644
+--- a/src/game_dynrpg.cpp
++++ b/src/game_dynrpg.cpp
+@@ -30,6 +30,7 @@
+ 
+ #include "dynrpg_easyrpg.h"
+ #include "dynrpg_textplugin.h"
++#include "pixel_movement.h"
+ 
+ enum DynRpg_ParseMode {
+ 	ParseMode_Function,
+@@ -187,6 +188,10 @@ void Game_DynRpg::InitPlugins() {
+ 		plugins.emplace_back(new DynRpg::TextPlugin(*this));
+ 	}
+ 
++	if (Player::IsPatchDynRpg() || Player::HasEasyRpgExtensions()) {
++		plugins.emplace_back(new PixelMovement::Plugin(*this));
++	}
++
+ 	plugins_loaded = true;
+ }
+ 
+diff --git a/src/game_interpreter.cpp b/src/game_interpreter.cpp
+index 5899f3e..da58993 100644
+--- a/src/game_interpreter.cpp
++++ b/src/game_interpreter.cpp
+@@ -2118,8 +2118,8 @@ std::optional<bool> Game_Interpreter::HandleDynRpgScript(const lcf::rpg::EventCo
+ 		}
+ 
+ 		if (!Player::IsPatchDynRpg() && Player::HasEasyRpgExtensions()) {
+-			// Only accept commands starting with @easyrpg_
+-			if (!StartsWith(com.string, "@easyrpg_")) {
++			// Only accept commands starting with @easyrpg_ (and the built-in pixel movement's @pixel_)
++			if (!StartsWith(com.string, "@easyrpg_") && !StartsWith(com.string, "@pixel_")) {
+ 				return {};
+ 			}
+ 		}
+diff --git a/src/game_player.cpp b/src/game_player.cpp
+index e52f73f..76f852b 100644
+--- a/src/game_player.cpp
++++ b/src/game_player.cpp
+@@ -17,6 +17,7 @@
+ 
+ // Headers
+ #include "game_player.h"
++#include "pixel_movement.h"
+ #include "async_handler.h"
+ #include "game_actor.h"
+ #include "game_map.h"
+@@ -48,6 +49,7 @@ Game_Player::Game_Player(): Game_PlayerBase(Player)
+ 	SetDirection(lcf::rpg::EventPage::Direction_down);
+ 	SetMoveSpeed(4);
+ 	SetAnimationType(lcf::rpg::EventPage::AnimType_non_continuous);
++	PixelMovement::Reset();
+ }
+ 
+ void Game_Player::SetSaveData(lcf::rpg::SavePartyLocation save)
+@@ -294,6 +296,10 @@ void Game_Player::UpdateNextMovementAction() {
+ 		return;
+ 	}
+ 
++	if (IsMoveRouteOverwritten() && (GetPixelOffsetX() != 0 || GetPixelOffsetY() != 0)) {
++		SetPixelOffset(0, 0); // move routes are tile based
++	}
++
+ 	if(IsPaused() || IsMoveRouteOverwritten() || Game_Message::IsMessageActive()) {
+ 		return;
+ 	}
+@@ -324,6 +330,13 @@ void Game_Player::UpdateNextMovementAction() {
+ 		return;
+ 	}
+ 
++	if (UpdatePixelMovement()) {
++		if (Input::IsTriggered(Input::DECISION) && !GetOnOffVehicle()) {
++			CheckActionEvent();
++		}
++		return;
++	}
++
+ 	int move_dir = -1;
+ 	switch (Input::dir4) {
+ 		case 2:
+@@ -379,6 +392,96 @@ void Game_Player::UpdateMovement(int amount) {
+ 	}
+ }
+ 
++bool Game_Player::UpdatePixelMovement() {
++	pixel_moved = false;
++	if (!PixelMovement::IsEnabled() || InVehicle() || IsBoardingOrUnboarding()) {
++		if (GetPixelOffsetX() != 0 || GetPixelOffsetY() != 0) {
++			SetPixelOffset(0, 0);
++		}
++		return false;
++	}
++
++	int dx = 0;
++	int dy = 0;
++	switch (Input::dir8) {
++		case 1: dx = -1; dy = 1; break;
++		case 2: dy = 1; break;
++		case 3: dx = 1; dy = 1; break;
++		case 4: dx = -1; break;
++		case 6: dx = 1; break;
++		case 7: dx = -1; dy = -1; break;
++		case 8: dy = -1; break;
++		case 9: dx = 1; dy = -1; break;
++	}
++	if (dx == 0 && dy == 0) {
++		return true;
++	}
++
++	// Face the way of the input. On a diagonal, keep the current facing if it is one
++	// of the two directions, otherwise face sideways.
++	const int horizontal = dx < 0 ? Left : Right;
++	const int vertical = dy < 0 ? Up : Down;
++	int dir;
++	if (dx != 0 && dy != 0) {
++		dir = (GetDirection() == horizontal || GetDirection() == vertical) ? GetDirection() : horizontal;
++	} else {
++		dir = dx != 0 ? horizontal : vertical;
++	}
++	SetDirection(dir);
++	if (!IsFacingLocked()) {
++		SetFacing(dir);
++	}
++
++	// Same speed as tile movement (sub-pixel units per frame); diagonals by 1/sqrt(2).
++	int amount = 1 << (1 + GetMoveSpeed());
++	if (dx != 0 && dy != 0) {
++		amount = amount * 181 / 256;
++	}
++	const bool through = (Player::debug_flag && Input::IsPressed(Input::DEBUG_THROUGH)) || data()->move_route_through;
++	const int old_x = GetX();
++	const int old_y = GetY();
++	std::vector<Game_Event*> bumped;
++	int moved = PixelMovement::Step(*this, dx * amount, 0, through, bumped);
++	moved |= PixelMovement::Step(*this, 0, dy * amount, through, bumped);
++	pixel_moved = moved != 0;
++	UpdatePixelScroll();
++
++	// Bumping into an event with a touch trigger starts it, as in tile movement.
++	for (auto* ev: bumped) {
++		const auto trigger = ev->GetTrigger();
++		if (trigger.has_value() && (*trigger == lcf::rpg::EventPage::Trigger_touched || *trigger == lcf::rpg::EventPage::Trigger_collision)) {
++			ev->ScheduleForegroundExecution(false, true);
++		}
++	}
++
++	// Entering a new tile counts as a step.
++	if (GetX() != old_x || GetY() != old_y) {
++		Main_Data::game_party->IncSteps();
++		if (Main_Data::game_party->ApplyStateDamage()) {
++			Main_Data::game_screen->FlashMapStepDamage();
++		}
++		UpdateEncounterSteps();
++		CheckEventTriggerHere({ lcf::rpg::EventPage::Trigger_touched, lcf::rpg::EventPage::Trigger_collision }, false);
++	}
++	return true;
++}
++
++void Game_Player::UpdatePixelScroll() {
++	if (IsPanLocked()) {
++		return;
++	}
++	const auto dx = GetSpriteX() - Game_Map::GetPositionX() - GetPanX();
++	const auto dy = GetSpriteY() - Game_Map::GetPositionY() - GetPanY();
++	Game_Map::Scroll(dx, dy);
++}
++
++void Game_Player::UpdateAnimation() {
++	if (pixel_moved) {
++		SetStopCount(0); // walking: animate like a moving character
++	}
++	Game_Character::UpdateAnimation();
++}
++
+ void Game_Player::Update() {
+ 	Game_Character::Update();
+ 
+diff --git a/src/game_player.h b/src/game_player.h
+index 9174e1f..5a87848 100644
+--- a/src/game_player.h
++++ b/src/game_player.h
+@@ -160,6 +160,13 @@ private:
+ 	using TriggerSet = lcf::FlagSet<lcf::rpg::EventPage::Trigger>;
+ 
+ 	void UpdateScroll(int amount, bool was_jumping);
++	/** Pixel movement (pixel_movement.h): walks in pixel steps; false if not in use. */
++	bool UpdatePixelMovement();
++	/** Pixel movement: keeps the camera on the hero's sprite. */
++	void UpdatePixelScroll();
++	void UpdateAnimation() override;
++	/** Pixel movement: the hero moved this frame (for the walking animation). */
++	bool pixel_moved = false;
+ 	void UpdatePan();
+ 	void UpdateEncounterSteps();
+ 	bool CheckActionEvent();
+diff --git a/src/pixel_movement.cpp b/src/pixel_movement.cpp
+new file mode 100644
+index 0000000..5972213
+--- /dev/null
++++ b/src/pixel_movement.cpp
+@@ -0,0 +1,278 @@
++/*
++ * This file is part of EasyRPG Player.
++ *
++ * EasyRPG Player is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * EasyRPG Player is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with EasyRPG Player. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "pixel_movement.h"
++#include "filefinder.h"
++#include "game_event.h"
++#include "game_map.h"
++#include "game_player.h"
++#include "main_data.h"
++#include "output.h"
++
++#ifdef HAVE_NLOHMANN_JSON
++#include "json_helper.h"
++#endif
++
++#include <iterator>
++#include <optional>
++#include <unordered_map>
++
++namespace {
++	constexpr int S = SCREEN_TILE_SIZE;             // sub-pixel units per tile
++	constexpr int P = SCREEN_TILE_SIZE / TILE_SIZE; // sub-pixel units per pixel
++
++	struct PixelState {
++		bool loaded = false;
++		bool enabled = false;
++		std::optional<bool> session; // set by @pixel_movement
++		PixelMovement::Box hero = { 2, 4, 12, 12 };
++		std::unordered_map<const lcf::rpg::EventPage*, PixelMovement::Box> event_boxes;
++	} state;
++
++	int FloorDiv(int a, int b) {
++		return a >= 0 ? a / b : -((-a + b - 1) / b);
++	}
++
++	PixelMovement::Box Sanitized(PixelMovement::Box b) {
++		b.w = std::max(1, b.w);
++		b.h = std::max(1, b.h);
++		return b;
++	}
++
++	void Load() {
++		if (state.loaded) {
++			return;
++		}
++		state.loaded = true;
++		auto is = FileFinder::Game().OpenFile("lcf-plugins", "pixel_movement.json");
++		if (!is) {
++			return;
++		}
++#ifdef HAVE_NLOHMANN_JSON
++		std::string text((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
++		json j = json::parse(text, nullptr, false);
++		if (j.is_discarded() || !j.is_object()) {
++			Output::Warning("PixelMovement: lcf-plugins/pixel_movement.json is not valid JSON");
++			return;
++		}
++		state.enabled = j.value("enabled", false);
++		if (j.contains("hero") && j["hero"].is_object()) {
++			const auto& h = j["hero"];
++			state.hero = Sanitized({ h.value("x", 2), h.value("y", 4), h.value("width", 12), h.value("height", 12) });
++		}
++		Output::Debug("PixelMovement: {}, hero hitbox {} {} {}x{}", state.enabled ? "on" : "off",
++			state.hero.x, state.hero.y, state.hero.w, state.hero.h);
++#else
++		Output::Warning("PixelMovement: this Player was built without JSON support; pixel_movement.json is ignored");
++#endif
++	}
++
++	// The hitbox of a character in sub-pixel map coordinates.
++	PixelMovement::Box Absolute(const Game_Character& ch, PixelMovement::Box rel) {
++		return {
++			ch.GetX() * S + ch.GetPixelOffsetX() + rel.x * P,
++			ch.GetY() * S + ch.GetPixelOffsetY() + rel.y * P,
++			rel.w * P,
++			rel.h * P
++		};
++	}
++
++	bool Overlap1D(int a, int a_len, int b, int b_len) {
++		return a < b + b_len && b < a + a_len;
++	}
++
++	// RPG Maker's tile rules for a step between two neighbouring tiles (map only).
++	bool TilePassage(const Game_Character& ch, int from_x, int from_y, int to_x, int to_y) {
++		return Game_Map::CheckWay(ch, from_x, from_y, to_x, to_y, false, Span<int>());
++	}
++
++	// Shortens a move so the hitbox stops at the border of the first tile it may not enter.
++	int LimitByTiles(const Game_Character& ch, const PixelMovement::Box& b, bool horizontal, int amount) {
++		const int pos = horizontal ? b.x : b.y;
++		const int len = horizontal ? b.w : b.h;
++		const int across_first = FloorDiv(horizontal ? b.y : b.x, S);
++		const int across_last = FloorDiv((horizontal ? b.y + b.h : b.x + b.w) - 1, S);
++		auto passable = [&](int from, int to, int across) {
++			return horizontal ? TilePassage(ch, from, across, to, across) : TilePassage(ch, across, from, across, to);
++		};
++		if (amount > 0) {
++			const int edge = pos + len; // exclusive
++			for (int t = FloorDiv(edge - 1, S) + 1; t <= FloorDiv(edge - 1 + amount, S); ++t) {
++				for (int a = across_first; a <= across_last; ++a) {
++					if (!passable(t - 1, t, a)) {
++						return t * S - edge;
++					}
++				}
++			}
++		} else {
++			const int edge = pos;
++			for (int t = FloorDiv(edge, S) - 1; t >= FloorDiv(edge + amount, S); --t) {
++				for (int a = across_first; a <= across_last; ++a) {
++					if (!passable(t + 1, t, a)) {
++						return (t + 1) * S - edge;
++					}
++				}
++			}
++		}
++		return amount;
++	}
++
++	// Shortens a move so the hitbox stops at blocking events (same layer as the hero).
++	int LimitByEvents(const PixelMovement::Box& b, bool horizontal, int amount, std::vector<Game_Event*>& bumped) {
++		std::vector<std::pair<Game_Event*, int>> hits;
++		for (auto& ev: Game_Map::GetEvents()) {
++			if (!ev.IsActive() || ev.GetActivePage() == nullptr || ev.GetThrough()
++					|| ev.GetLayer() != lcf::rpg::EventPage::Layers_same) {
++				continue;
++			}
++			const auto e = Absolute(ev, PixelMovement::EventHitbox(ev));
++			const bool across = horizontal ? Overlap1D(b.y, b.h, e.y, e.h) : Overlap1D(b.x, b.w, e.x, e.w);
++			const bool along = horizontal ? Overlap1D(b.x, b.w, e.x, e.w) : Overlap1D(b.y, b.h, e.y, e.h);
++			if (!across || along) {
++				continue; // not in the way, or already overlapping (never get stuck)
++			}
++			int gap;
++			if (amount > 0) {
++				gap = horizontal ? e.x - (b.x + b.w) : e.y - (b.y + b.h);
++				if (gap < 0 || gap >= amount) continue; // behind the hero, or not reached
++			} else {
++				gap = horizontal ? (e.x + e.w) - b.x : (e.y + e.h) - b.y;
++				if (gap > 0 || gap <= amount) continue;
++			}
++			amount = gap;
++			hits.emplace_back(&ev, gap);
++		}
++		for (auto& hit: hits) {
++			if (hit.second == amount) {
++				bumped.push_back(hit.first);
++			}
++		}
++		return amount;
++	}
++}
++
++void PixelMovement::Reset() {
++	state = PixelState();
++}
++
++bool PixelMovement::IsEnabled() {
++	Load();
++	if (Game_Map::LoopHorizontal() || Game_Map::LoopVertical()) {
++		return false; // not supported by the prototype
++	}
++	return state.session.value_or(state.enabled);
++}
++
++void PixelMovement::SetEnabled(bool enabled) {
++	Load();
++	state.session = enabled;
++}
++
++PixelMovement::Box PixelMovement::HeroHitbox() {
++	Load();
++	return state.hero;
++}
++
++PixelMovement::Box PixelMovement::EventHitbox(const Game_Event& ev) {
++	const auto* page = ev.GetActivePage();
++	if (page == nullptr) {
++		return { 0, 0, TILE_SIZE, TILE_SIZE };
++	}
++	auto it = state.event_boxes.find(page);
++	if (it != state.event_boxes.end()) {
++		return it->second;
++	}
++	Box box = { 0, 0, TILE_SIZE, TILE_SIZE };
++	// "@pixel_hitbox x, y, w, h" among the comments at the top of the page.
++	for (const auto& cmd: page->event_commands) {
++		if (cmd.code != static_cast<int>(lcf::rpg::EventCommand::Code::Comment)
++				&& cmd.code != static_cast<int>(lcf::rpg::EventCommand::Code::Comment_2)) {
++			break;
++		}
++		std::vector<std::string> args;
++		if (DynRpg::ParseCommand(ToString(cmd.string), args) == "pixel_hitbox" && args.size() >= 4) {
++			bool okay = true;
++			int x, y, w, h;
++			std::tie(x, y, w, h) = DynRpg::ParseArgs<int, int, int, int>("pixel_hitbox", args, &okay);
++			if (okay) {
++				box = Sanitized({ x, y, w, h });
++			}
++			break;
++		}
++	}
++	state.event_boxes[page] = box;
++	return box;
++}
++
++int PixelMovement::Step(Game_Player& hero, int dx, int dy, bool through, std::vector<Game_Event*>& bumped) {
++	const bool horizontal = dx != 0;
++	int amount = horizontal ? dx : dy;
++	if (amount == 0) {
++		return 0;
++	}
++	const Box rel = HeroHitbox();
++	if (!through) {
++		const Box b = Absolute(hero, rel);
++		amount = LimitByTiles(hero, b, horizontal, amount);
++		amount = LimitByEvents(b, horizontal, amount, bumped);
++	}
++	if (amount == 0) {
++		return 0;
++	}
++	// The hero's tile is the tile under the centre of its hitbox.
++	const int ox = hero.GetX() * S + hero.GetPixelOffsetX() + (horizontal ? amount : 0);
++	const int oy = hero.GetY() * S + hero.GetPixelOffsetY() + (horizontal ? 0 : amount);
++	const int tx = FloorDiv(ox + rel.x * P + rel.w * P / 2, S);
++	const int ty = FloorDiv(oy + rel.y * P + rel.h * P / 2, S);
++	hero.SetX(tx);
++	hero.SetY(ty);
++	hero.SetPixelOffset(ox - tx * S, oy - ty * S);
++	return amount;
++}
++
++bool PixelMovement::Plugin::Invoke(std::string_view func, dyn_arg_list args, bool&, Game_Interpreter*) {
++	if (func == "pixel_movement") {
++		bool okay = false;
++		int on;
++		std::tie(on) = DynRpg::ParseArgs<int>(func, args, &okay);
++		if (okay) {
++			SetEnabled(on != 0);
++		}
++		return true;
++	}
++	if (func == "pixel_move") {
++		bool okay = false;
++		int target, dx, dy;
++		std::tie(target, dx, dy) = DynRpg::ParseArgs<int, int, int>(func, args, &okay);
++		if (!okay) {
++			return true;
++		}
++		if (target == Game_Character::CharPlayer) {
++			auto& hero = *Main_Data::game_player;
++			std::vector<Game_Event*> bumped;
++			Step(hero, dx * P, 0, hero.GetThrough(), bumped);
++			Step(hero, 0, dy * P, hero.GetThrough(), bumped);
++		} else if (auto* ev = Game_Map::GetEvent(target)) {
++			ev->SetPixelOffset(ev->GetPixelOffsetX() + dx * P, ev->GetPixelOffsetY() + dy * P);
++		}
++		return true;
++	}
++	if (func == "pixel_hitbox") {
++		return true; // a declaration, read by EventHitbox()
++	}
++	return false;
++}
+diff --git a/src/pixel_movement.h b/src/pixel_movement.h
+new file mode 100644
+index 0000000..fc5bfb2
+--- /dev/null
++++ b/src/pixel_movement.h
+@@ -0,0 +1,88 @@
++/*
++ * This file is part of EasyRPG Player.
++ *
++ * EasyRPG Player is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * EasyRPG Player is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with EasyRPG Player. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#ifndef EP_PIXEL_MOVEMENT_H
++#define EP_PIXEL_MOVEMENT_H
++
++#include "game_dynrpg.h"
++#include <vector>
++
++class Game_Character;
++class Game_Event;
++class Game_Player;
++
++/**
++ * Pixel movement (prototype): the hero walks in pixel steps instead of whole tiles,
++ * with a hitbox that collides with the map's passability and with events.
++ *
++ * Opt-in per game: lcf-plugins/pixel_movement.json in the game folder (written by
++ * the pixel movement plugin of godot-lcf-editor):
++ *
++ *     { "enabled": true, "hero": { "x": 2, "y": 4, "width": 12, "height": 12 } }
++ *
++ * The hitbox is in pixels, relative to the top-left corner of the character's
++ * tile. Events have the whole tile as hitbox unless the first commands of their
++ * active page include the comment "@pixel_hitbox x, y, width, height".
++ *
++ * Game logic stays tile based: the hero's tile is the tile under the centre of its
++ * hitbox, so triggers, terrain, encounters and teleports work as before. Comment
++ * commands (with EasyRPG extensions or in DynRPG mode):
++ *   @pixel_movement 1|0         turn pixel movement on or off
++ *   @pixel_move target, dx, dy  move the hero (10001) with collision, or shift an
++ *                               event's sprite, by dx, dy pixels
++ */
++namespace PixelMovement {
++	/** A rectangle in sub-pixel units (16 per pixel) or pixels, as noted. */
++	struct Box {
++		int x = 0;
++		int y = 0;
++		int w = 0;
++		int h = 0;
++	};
++
++	/** Forgets settings and caches (new game, loaded game, title). */
++	void Reset();
++
++	/** True if the game uses pixel movement right now. */
++	bool IsEnabled();
++
++	/** Turns pixel movement on or off for this session (@pixel_movement). */
++	void SetEnabled(bool enabled);
++
++	/** The hero's hitbox in pixels, relative to its tile's top-left corner. */
++	Box HeroHitbox();
++
++	/** An event's hitbox in pixels, relative to its tile (whole tile by default). */
++	Box EventHitbox(const Game_Event& ev);
++
++	/**
++	 * Moves the hero along one axis by `amount` sub-pixel units (only one of dx, dy
++	 * is non-zero), stopping at impassable tiles and blocking events. Events the
++	 * hero bumps into are added to `bumped`.
++	 * @return the distance actually moved.
++	 */
++	int Step(Game_Player& hero, int dx, int dy, bool through, std::vector<Game_Event*>& bumped);
++
++	/** Pixel movement's comment commands. */
++	class Plugin : public DynRpgPlugin {
++	public:
++		explicit Plugin(Game_DynRpg& instance) : DynRpgPlugin("PixelMovement", instance) {}
++		bool Invoke(std::string_view func, dyn_arg_list args, bool& do_yield, Game_Interpreter* interpreter) override;
++	};
++}
++
++#endif
+-- 
+2.43.0
+

@@ -106,6 +106,38 @@ jobs:
           if grep -q "SCRIPT ERROR" events.log; then echo "::error::Script errors in events.log"; exit 1; fi
           echo "::notice title=Event editor (${{ matrix.name }})::$(grep -c '  ok ' events.log) checks ok, result: $(tail -n 1 events.log)"
 
+      - name: Pixel movement plugin test
+        run: |
+          "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_pixel_movement.gd | tee pixel.log
+          if grep -q "SCRIPT ERROR" pixel.log; then echo "::error::Script errors in pixel.log"; exit 1; fi
+          echo "::notice title=Pixel movement plugin (${{ matrix.name }})::$(grep -c '  ok ' pixel.log) checks ok, result: $(tail -n 1 pixel.log)"
+
+      - name: Install EasyRPG Player libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y libsdl2-dev libpixman-1-dev libpng-dev libfmt-dev libfreetype-dev \
+            libharfbuzz-dev nlohmann-json3-dev libinih-dev libexpat1-dev xvfb
+
+      - name: Cache patched EasyRPG Player (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: runtime/easyrpg-player/build
+          key: player-${{ runner.os }}-${{ hashFiles('runtime/easyrpg-player/*.patch', 'runtime/easyrpg-player/build.sh') }}
+
+      - name: Build patched EasyRPG Player (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          PLAYER_CMAKE_ARGS="-DPLAYER_AUDIO_BACKEND=OFF" runtime/easyrpg-player/build.sh > player-path.txt
+          echo "PATCHED_PLAYER=$(tail -n 1 player-path.txt)" >> "$GITHUB_ENV"
+
+      - name: Pixel movement runtime test (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          xvfb-run -a "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_pixel_runtime.gd -- "$PATCHED_PLAYER" | tee runtime.log
+          if grep -q "SCRIPT ERROR" runtime.log; then echo "::error::Script errors in runtime.log"; exit 1; fi
+          echo "::notice title=Pixel movement in EasyRPG Player (${{ matrix.name }})::$(grep -c '  ok ' runtime.log) checks ok, result: $(tail -n 1 runtime.log)"
+
       - name: Round-trip test (EasyRPG TestGame)
         run: |
           git clone --depth 1 https://github.com/EasyRPG/TestGame ../TestGame
@@ -132,10 +164,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: lcf_editor-${{ runner.os }}
-          # Both folders, so the artifact holds lcf_editor/ and lcf_map_notes/.
+          # All plugin folders: lcf_editor/, lcf_map_notes/ and lcf_pixel_movement/.
           path: |
             addons/lcf_editor
             addons/lcf_map_notes
+            addons/lcf_pixel_movement
 
   release:
     # Runs for version tags (v0.1.0, ...) and for releases published on GitHub:
@@ -156,6 +189,7 @@ jobs:
           mkdir -p addons
           cp -r artifacts/lcf_editor-Linux/lcf_editor addons/lcf_editor
           cp -r artifacts/lcf_editor-Linux/lcf_map_notes addons/lcf_map_notes
+          cp -r artifacts/lcf_editor-Linux/lcf_pixel_movement addons/lcf_pixel_movement
           cp artifacts/lcf_editor-Windows/lcf_editor/bin/* addons/lcf_editor/bin/
           ls -l addons/lcf_editor/bin addons/lcf_map_notes
           zip -r "lcf_editor-${GITHUB_REF_NAME}.zip" addons

@@ -245,6 +245,8 @@ int main(int argc, char **argv) {
 		actor.class_id = spec.class_id;
 		actor.initial_equipment.weapon_id = spec.weapon;
 		actor.final_level = 50;
+		actor.character_name = DBString("Demo");  // demo/CharSet/Demo.png, character 0
+		actor.character_index = 0;
 	}
 
 	auto &slime = named(db.enemies, "Slime");
@@ -275,6 +277,15 @@ int main(int argc, char **argv) {
 	chipset.ID = 1;
 	chipset.name = DBString("Demo Tiles");
 	chipset.chipset_name = DBString("Demo");
+	// Passability like a hand-made RPG Maker chipset (liblcf's default is "all
+	// passable"): 15 = enter from every side, 0 = blocked, 0x10 = drawn above the hero.
+	// Lower indices: 0-2 water, 3-5 animated, 6-17 ground autotiles, 18+ tiles 5000+n.
+	for (int i : { 0, 1, 2, 3 }) chipset.passable_data_lower[i] = 0;  // water, waterfall
+	for (int n : { 8, 9, 10 }) chipset.passable_data_lower[18 + n] = 0;  // wall, roof, void
+	// Upper tiles 10000+n: tree top above the hero; trunk, bush, rock, fence, sign,
+	// roof, walls, chest, table and barrel block; the door is passable.
+	chipset.passable_data_upper[1] = 0x10 | 15;
+	for (int n : { 2, 3, 4, 5, 7, 8, 9, 10, 12, 13, 15, 16, 17 }) chipset.passable_data_upper[n] = 0;
 	db.chipsets.push_back(chipset);
 
 	for (const char *name : { "Intro done", "Door open", "Chest opened" }) named(db.switches, name);
@@ -343,10 +354,12 @@ int main(int argc, char **argv) {
 		} else if (spec.id == 3) {
 			add_event(map, "Door A", 4, 5, { { cmd(Code::Teleport, 0, "", { 4, 7, 7, 0 }) } });
 			add_event(map, "Door B", 15, 5, { { cmd(Code::ShowMessage, 0, "The door is locked.") } });
-			add_event(map, "Villager", 9, 10, { {
+			auto &villager = add_event(map, "Villager", 9, 10, { {
 				cmd(Code::ShowMessage, 0, "Nice weather today."),
 				cmd(Code::CallEvent, 0, "", { 0, 1, 0 }),  // common event 1
 			} });
+			villager.pages[0].character_name = DBString("Demo");  // character 1
+			villager.pages[0].character_index = 1;
 		} else {
 			auto &chest = add_event(map, "Chest", 13, 3, {
 				{
