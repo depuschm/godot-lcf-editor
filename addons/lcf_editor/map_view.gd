@@ -1,29 +1,63 @@
 @tool
 extends VBoxContainer
-## Main-screen view of one RPG Maker map: lower and upper layer as TileMapLayers,
-## events as markers. Wheel zooms, middle or right mouse button pans.
+## Main-screen view and editor of one RPG Maker map: lower and upper layer as
+## TileMapLayers, events as markers, a tile palette and painting tools.
+##
+## Left mouse paints with the current tool, right click picks the tile under the
+## cursor, middle mouse (or Space + left mouse) pans, the wheel zooms. Holding Shift
+## places the exact tile without autotiling.
 
 const TILE := 16
 const ZOOM_STEPS: Array[float] = [0.5, 1.0, 2.0, 3.0, 4.0, 6.0]
+const TilePalette := preload("res://addons/lcf_editor/tile_palette.gd")
+
+enum Tool { PENCIL, RECTANGLE, FILL, PICK }
+enum Layer { LOWER, UPPER }
 
 var project: RefCounted  # LcfProject
-var map: Dictionary
 var chipset: RefCounted  # LcfChipset
+var undo_redo: Object    # EditorUndoRedoManager, set by the plugin
+var map: Dictionary
+var map_id := 0
+var map_name := ""
+var lower: PackedInt32Array
+var upper: PackedInt32Array
+var coords := {}  # tile id -> atlas cell
+var round_trip_ok := true
+var confirmed_maps := {}  # map id -> true once the user accepted a normalising save
 
 var title_label: Label
 var zoom_label: Label
 var status_label: Label
+var map_status: Label
+var save_button: Button
+var revert_button: Button
 var events_toggle: CheckButton
 var grid_toggle: CheckButton
+var layer_buttons: Array[Button] = []
+var tool_buttons: Array[Button] = []
 var viewport_area: Control
 var canvas: Node2D
 var lower_layer: TileMapLayer
 var upper_layer: TileMapLayer
 var overlay: Node2D
 var message: Label
+var palette: Control
+var confirm_dialog: ConfirmationDialog
 
 var zoom_index := 2
 var panning := false
+var tool := Tool.PENCIL
+var layer := Layer.LOWER
+var selected_tile := {Layer.LOWER: 4049, Layer.UPPER: 10001}
+
+# Current stroke
+var painting := false
+var last_cell := Vector2i(-1, -1)
+var rect_start := Vector2i(-1, -1)
+var rect_end := Vector2i(-1, -1)
+var stroke_before := {}
+var stroke_after := {}
 
 
 func _ready() -> void:
@@ -34,6 +68,7 @@ func _ready() -> void:
 	title_label = Label.new()
 	title_label.text = "No map open. Select one in the LCF Project dock."
 	title_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title_label.clip_text = true
 	bar.add_child(title_label)
 	events_toggle = _toggle(bar, "Events", true)
 	grid_toggle = _toggle(bar, "Grid", false)
@@ -46,12 +81,44 @@ func _ready() -> void:
 	zoom_label = Label.new()
 	bar.add_child(zoom_label)
 
+	var tools := HBoxContainer.new()
+	add_child(tools)
+	var layer_group := ButtonGroup.new()
+	for entry in [["Lower layer", Layer.LOWER], ["Upper layer", Layer.UPPER]]:
+		layer_buttons.append(_choice(tools, entry[0], layer_group, _set_layer.bind(entry[1])))
+	tools.add_child(VSeparator.new())
+	var tool_group := ButtonGroup.new()
+	for entry in [["Pencil", Tool.PENCIL], ["Rectangle", Tool.RECTANGLE], ["Fill", Tool.FILL], ["Pick", Tool.PICK]]:
+		tool_buttons.append(_choice(tools, entry[0], tool_group, func() -> void: tool = entry[1]))
+	layer_buttons[0].button_pressed = true
+	tool_buttons[0].button_pressed = true
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tools.add_child(spacer)
+	map_status = Label.new()
+	tools.add_child(map_status)
+	save_button = Button.new()
+	save_button.text = "Save map"
+	save_button.disabled = true
+	save_button.pressed.connect(_on_save_pressed)
+	tools.add_child(save_button)
+	revert_button = Button.new()
+	revert_button.text = "Revert"
+	revert_button.disabled = true
+	revert_button.pressed.connect(_on_revert_pressed)
+	tools.add_child(revert_button)
+
+	var split := HSplitContainer.new()
+	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	add_child(split)
+
 	viewport_area = Control.new()
-	viewport_area.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	viewport_area.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	viewport_area.clip_contents = true
 	viewport_area.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	viewport_area.focus_mode = Control.FOCUS_CLICK
 	viewport_area.gui_input.connect(_on_gui_input)
-	add_child(viewport_area)
+	split.add_child(viewport_area)
 
 	var background := ColorRect.new()
 	background.color = Color(0.08, 0.08, 0.1)
@@ -74,9 +141,24 @@ func _ready() -> void:
 	message.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	viewport_area.add_child(message)
 
+	var palette_scroll := ScrollContainer.new()
+	palette_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	palette_scroll.custom_minimum_size = Vector2(TilePalette.COLUMNS * 16 * TilePalette.SCALE + 16, 0)
+	palette_scroll.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	split.add_child(palette_scroll)
+	palette = TilePalette.new()
+	palette.tile_selected.connect(func(id: int) -> void: selected_tile[layer] = id)
+	palette_scroll.add_child(palette)
+
 	status_label = Label.new()
-	status_label.text = " "
+	status_label.text = "Left: paint · Right: pick tile · Middle or Space+drag: pan · Wheel: zoom · Shift: exact tile (no autotiling)"
+	status_label.clip_text = true
 	add_child(status_label)
+
+	confirm_dialog = ConfirmationDialog.new()
+	confirm_dialog.dialog_autowrap = true
+	confirm_dialog.min_size = Vector2i(480, 0)
+	add_child(confirm_dialog)
 	_update_zoom_label()
 
 
@@ -89,8 +171,22 @@ func _toggle(parent: Control, text: String, on: bool) -> CheckButton:
 	return toggle
 
 
-func show_map(p_project: RefCounted, map_id: int, map_name: String) -> void:
+func _choice(parent: Control, text: String, group: ButtonGroup, action: Callable) -> Button:
+	var button := Button.new()
+	button.text = text
+	button.toggle_mode = true
+	button.button_group = group
+	button.pressed.connect(action)
+	parent.add_child(button)
+	return button
+
+
+# --- loading ----------------------------------------------------------------------
+
+func show_map(p_project: RefCounted, p_map_id: int, p_map_name: String) -> void:
 	project = p_project
+	map_id = p_map_id
+	map_name = p_map_name
 	map = project.get_map(map_id)
 	lower_layer.clear()
 	upper_layer.clear()
@@ -99,7 +195,11 @@ func show_map(p_project: RefCounted, map_id: int, map_name: String) -> void:
 		title_label.text = map_name
 		message.text = "Could not load map:\n" + project.get_last_error()
 		overlay.queue_redraw()
+		_update_map_status()
 		return
+	lower = map.lower
+	upper = map.upper
+	round_trip_ok = project.check_map_round_trip(map_id).get("identical", true)
 
 	var info: Dictionary = project.get_chipset(map.chipset_id)
 	title_label.text = "%s · Map%04d · %d×%d · chipset “%s”" % [
@@ -108,20 +208,40 @@ func show_map(p_project: RefCounted, map_id: int, map_name: String) -> void:
 	chipset = ClassDB.instantiate("LcfChipset")
 	var file: String = project.find_image("ChipSet", info.get("file", ""))
 	if file == "" or chipset.load(file) != OK:
+		chipset = null
 		message.text = "Chipset image “%s” not found in the project's ChipSet folder.\nRTP graphics are not supported yet." % info.get("file", "")
 	else:
+		_build_tileset()
 		_fill_layers()
+	_set_layer(layer)
 	_fit_view()
 	overlay.queue_redraw()
+	_update_map_status()
 
 
-func _fill_layers() -> void:
+# Every tile ID the editor can produce, so atlas cells never have to move.
+func _all_tile_ids() -> PackedInt32Array:
 	var ids := PackedInt32Array()
-	ids.append_array(map.lower)
-	ids.append_array(map.upper)
-	var atlas: Dictionary = chipset.build_atlas(ids)
-	var coords: Dictionary = atlas.coords
+	for type in 3:
+		for deep in 16:
+			for shore in 47:
+				ids.append(type * 1000 + deep * 50 + shore)
+	for animated in 3:
+		ids.append(3000 + animated * 50)
+	for block in 12:
+		for pattern in 50:
+			ids.append(4000 + block * 50 + pattern)
+	for n in 144:
+		ids.append(5000 + n)
+		ids.append(10000 + n)
+	ids.append_array(lower)
+	ids.append_array(upper)
+	return ids
 
+
+func _build_tileset() -> void:
+	var atlas: Dictionary = chipset.build_atlas(_all_tile_ids(), 0, 0, 64)
+	coords = atlas.coords
 	var source := TileSetAtlasSource.new()
 	source.texture = ImageTexture.create_from_image(atlas.image)
 	source.texture_region_size = Vector2i(TILE, TILE)
@@ -133,12 +253,286 @@ func _fill_layers() -> void:
 	lower_layer.tile_set = tile_set
 	upper_layer.tile_set = tile_set
 
-	var w: int = map.width
-	for i in map.lower.size():
-		var pos := Vector2i(i % w, i / w)
-		lower_layer.set_cell(pos, 0, coords[map.lower[i]])
-		upper_layer.set_cell(pos, 0, coords[map.upper[i]])
 
+func _fill_layers() -> void:
+	var w: int = map.width
+	for i in lower.size():
+		var pos := Vector2i(i % w, i / w)
+		lower_layer.set_cell(pos, 0, coords.get(lower[i], Vector2i.ZERO))
+		upper_layer.set_cell(pos, 0, coords.get(upper[i], Vector2i.ZERO))
+
+
+func _set_layer(value: Layer) -> void:
+	layer = value
+	if not chipset:
+		palette.set_tiles(null, [])
+		return
+	var ids: Array[int] = []
+	if layer == Layer.LOWER:
+		ids.append_array([0, 1000, 2000, 3000, 3050, 3100])
+		for block in 12:
+			ids.append(4000 + block * 50 + 49)
+		for n in 144:
+			ids.append(5000 + n)
+	else:
+		for n in 144:
+			ids.append(10000 + n)
+	palette.set_tiles(chipset, ids)
+	palette.select_tile(selected_tile[layer])
+	upper_layer.modulate.a = 1.0 if layer == Layer.UPPER else 0.6
+
+
+# --- painting ---------------------------------------------------------------------
+
+func _cell_at(mouse: Vector2) -> Vector2i:
+	return Vector2i(((mouse - canvas.position) / canvas.scale.x / TILE).floor())
+
+
+func _inside(cell: Vector2i) -> bool:
+	return not map.is_empty() and cell.x >= 0 and cell.y >= 0 and cell.x < map.width and cell.y < map.height
+
+
+func _paint(cells: PackedInt32Array, exact: bool) -> void:
+	if cells.is_empty() or not chipset:
+		return
+	var change: Dictionary = project.paint_map_tiles(map_id, layer, cells, selected_tile[layer], not exact)
+	var changed: PackedInt32Array = change.get("cells", PackedInt32Array())
+	for i in changed.size():
+		var cell: int = changed[i]
+		if not stroke_before.has(cell):
+			stroke_before[cell] = change.before[i]
+		stroke_after[cell] = change.after[i]
+	_show_tiles(layer, changed, change.get("after", PackedInt32Array()))
+
+
+func _show_tiles(which: int, cells: PackedInt32Array, ids: PackedInt32Array) -> void:
+	var w: int = map.width
+	var target := lower_layer if which == Layer.LOWER else upper_layer
+	for i in cells.size():
+		var id: int = ids[i]
+		if which == Layer.LOWER:
+			lower[cells[i]] = id
+		else:
+			upper[cells[i]] = id
+		target.set_cell(Vector2i(cells[i] % w, cells[i] / w), 0, coords.get(id, Vector2i.ZERO))
+
+
+func _line(a: Vector2i, b: Vector2i) -> PackedInt32Array:
+	var cells := PackedInt32Array()
+	var steps := maxi(absi(b.x - a.x), absi(b.y - a.y))
+	for i in steps + 1:
+		var t := 0.0 if steps == 0 else float(i) / steps
+		var p := Vector2i(Vector2(a).lerp(Vector2(b), t).round())
+		if _inside(p):
+			cells.append(p.y * map.width + p.x)
+	return cells
+
+
+func _rect_cells(a: Vector2i, b: Vector2i) -> PackedInt32Array:
+	var cells := PackedInt32Array()
+	for y in range(mini(a.y, b.y), maxi(a.y, b.y) + 1):
+		for x in range(mini(a.x, b.x), maxi(a.x, b.x) + 1):
+			if _inside(Vector2i(x, y)):
+				cells.append(y * map.width + x)
+	return cells
+
+
+# Autotiles count as one region per terrain (all water, or one ground autotile).
+func _kind(id: int) -> int:
+	if id >= 0 and id < 3000:
+		return -1
+	if id >= 4000 and id < 4600:
+		return -2 - (id - 4000) / 50
+	return id
+
+
+func _fill_cells(start: Vector2i) -> PackedInt32Array:
+	var tiles := lower if layer == Layer.LOWER else upper
+	var w: int = map.width
+	var target := _kind(tiles[start.y * w + start.x])
+	var seen := {}
+	var queue: Array[Vector2i] = [start]
+	var cells := PackedInt32Array()
+	while not queue.is_empty():
+		var p: Vector2i = queue.pop_back()
+		if not _inside(p) or seen.has(p):
+			continue
+		seen[p] = true
+		if _kind(tiles[p.y * w + p.x]) != target:
+			continue
+		cells.append(p.y * w + p.x)
+		queue.append_array([p + Vector2i.LEFT, p + Vector2i.RIGHT, p + Vector2i.UP, p + Vector2i.DOWN])
+	return cells
+
+
+func _pick(cell: Vector2i) -> void:
+	var id: int = (lower if layer == Layer.LOWER else upper)[cell.y * map.width + cell.x]
+	selected_tile[layer] = id
+	palette.select_tile(id)
+
+
+func _begin_stroke() -> void:
+	painting = true
+	stroke_before.clear()
+	stroke_after.clear()
+
+
+func _end_stroke() -> void:
+	painting = false
+	rect_start = Vector2i(-1, -1)
+	overlay.queue_redraw()
+	if stroke_after.is_empty():
+		return
+	var cells := PackedInt32Array(stroke_after.keys())
+	var before := PackedInt32Array()
+	var after := PackedInt32Array()
+	for cell in cells:
+		before.append(stroke_before[cell])
+		after.append(stroke_after[cell])
+	if undo_redo:
+		undo_redo.create_action("Paint map tiles")
+		undo_redo.add_do_method(self, "apply_tiles", map_id, layer, cells, after)
+		undo_redo.add_undo_method(self, "apply_tiles", map_id, layer, cells, before)
+		undo_redo.commit_action(false)
+	_update_map_status()
+
+
+## Sets exact tiles (used by undo/redo).
+func apply_tiles(p_map_id: int, which: int, cells: PackedInt32Array, ids: PackedInt32Array) -> void:
+	project.set_map_tiles(p_map_id, which, cells, ids)
+	if p_map_id == map_id and not map.is_empty():
+		_show_tiles(which, cells, ids)
+	_update_map_status()
+
+
+func _on_gui_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton:
+		var cell := _cell_at(event.position)
+		match event.button_index:
+			MOUSE_BUTTON_WHEEL_UP:
+				if event.pressed:
+					_zoom_by(1, event.position)
+			MOUSE_BUTTON_WHEEL_DOWN:
+				if event.pressed:
+					_zoom_by(-1, event.position)
+			MOUSE_BUTTON_MIDDLE:
+				panning = event.pressed
+			MOUSE_BUTTON_RIGHT:
+				if event.pressed and _inside(cell):
+					_pick(cell)
+			MOUSE_BUTTON_LEFT:
+				if Input.is_key_pressed(KEY_SPACE):
+					panning = event.pressed
+				elif event.pressed and _inside(cell):
+					_on_left_pressed(cell, event.shift_pressed)
+				elif not event.pressed and painting:
+					if tool == Tool.RECTANGLE and rect_start.x >= 0:
+						_paint(_rect_cells(rect_start, rect_end), event.shift_pressed)
+					_end_stroke()
+		viewport_area.accept_event()
+	elif event is InputEventMouseMotion:
+		if panning:
+			canvas.position += event.relative
+		var cell := _cell_at(event.position)
+		if painting and cell != last_cell:
+			if tool == Tool.PENCIL:
+				_paint(_line(last_cell, cell), event.shift_pressed)
+			elif tool == Tool.RECTANGLE:
+				rect_end = Vector2i(clampi(cell.x, 0, map.width - 1), clampi(cell.y, 0, map.height - 1))
+				overlay.queue_redraw()
+			last_cell = cell
+		_update_status(cell)
+
+
+func _on_left_pressed(cell: Vector2i, exact: bool) -> void:
+	match tool:
+		Tool.PICK:
+			_pick(cell)
+		Tool.PENCIL:
+			_begin_stroke()
+			last_cell = cell
+			_paint(PackedInt32Array([cell.y * map.width + cell.x]), exact)
+		Tool.RECTANGLE:
+			_begin_stroke()
+			rect_start = cell
+			rect_end = cell
+			last_cell = cell
+			overlay.queue_redraw()
+		Tool.FILL:
+			_begin_stroke()
+			_paint(_fill_cells(cell), exact)
+			_end_stroke()
+
+
+# --- saving -----------------------------------------------------------------------
+
+func _backup_dir() -> String:
+	var dir: String = project.get_project_dir()
+	return "user://backups/%s-%s" % [dir.get_file().validate_filename(), dir.md5_text().substr(0, 8)]
+
+
+func _update_map_status(note := "", is_error := false) -> void:
+	var modified: bool = project != null and map_id > 0 and project.is_map_modified(map_id)
+	save_button.disabled = not modified
+	revert_button.disabled = not modified
+	map_status.text = note if note != "" else ("● Unsaved changes" if modified else "")
+	map_status.remove_theme_color_override("font_color")
+	if is_error:
+		map_status.add_theme_color_override("font_color", Color(1.0, 0.45, 0.45))
+
+
+func has_unsaved_maps() -> bool:
+	return project != null and project.is_loaded() and not project.get_modified_maps().is_empty()
+
+
+## Saves modified maps that save byte-identically or were confirmed; used when Godot saves everything.
+func save_if_safe() -> void:
+	if not has_unsaved_maps():
+		return
+	for id: int in project.get_modified_maps():
+		if project.check_map_round_trip(id).get("identical", true) or confirmed_maps.has(id):
+			project.save_map(id, _backup_dir())
+	_update_map_status()
+
+
+func _on_save_pressed() -> void:
+	if round_trip_ok or confirmed_maps.has(map_id):
+		_save()
+		return
+	confirm_dialog.title = "Save map?"
+	confirm_dialog.dialog_text = "Saving will not reproduce Map%04d.lmu byte for byte: liblcf leaves out a few fields that hold default values. The current file is copied to a backup first. Save anyway?" % map_id
+	_reconnect(func() -> void:
+		confirmed_maps[map_id] = true
+		_save())
+	confirm_dialog.popup_centered()
+
+
+func _save() -> void:
+	if project.save_map(map_id, _backup_dir()) != OK:
+		_update_map_status("Save failed: " + project.get_last_error(), true)
+		return
+	_update_map_status("Saved. Backup: " + project.get_last_backup().get_file())
+
+
+func _on_revert_pressed() -> void:
+	confirm_dialog.title = "Revert map?"
+	confirm_dialog.dialog_text = "Discard all unsaved changes to this map?"
+	_reconnect(func() -> void:
+		project.revert_map(map_id)
+		if undo_redo:
+			undo_redo.clear_history()
+		show_map(project, map_id, map_name)
+		_update_map_status("Reverted to the saved file."))
+	confirm_dialog.popup_centered()
+
+
+func _reconnect(action: Callable) -> void:
+	for connection in confirm_dialog.confirmed.get_connections():
+		confirm_dialog.confirmed.disconnect(connection.callable)
+	confirm_dialog.confirmed.connect(action, CONNECT_ONE_SHOT)
+
+
+# --- view -------------------------------------------------------------------------
 
 func _draw_overlay() -> void:
 	if map.is_empty():
@@ -156,20 +550,11 @@ func _draw_overlay() -> void:
 			var r := Rect2(Vector2(event.x, event.y) * TILE + Vector2(1, 1), Vector2(TILE - 2, TILE - 2))
 			overlay.draw_rect(r, Color(1, 1, 1, 0.25))
 			overlay.draw_rect(r, Color(1, 1, 1, 0.9), false)
-
-
-func _on_gui_input(event: InputEvent) -> void:
-	if event is InputEventMouseButton:
-		if event.button_index == MOUSE_BUTTON_WHEEL_UP and event.pressed:
-			_zoom_by(1, event.position)
-		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN and event.pressed:
-			_zoom_by(-1, event.position)
-		elif event.button_index in [MOUSE_BUTTON_MIDDLE, MOUSE_BUTTON_RIGHT]:
-			panning = event.pressed
-	elif event is InputEventMouseMotion:
-		if panning:
-			canvas.position += event.relative
-		_update_status(event.position)
+	if painting and tool == Tool.RECTANGLE and rect_start.x >= 0:
+		var a := Vector2(mini(rect_start.x, rect_end.x), mini(rect_start.y, rect_end.y)) * TILE
+		var b := Vector2(maxi(rect_start.x, rect_end.x) + 1, maxi(rect_start.y, rect_end.y) + 1) * TILE
+		overlay.draw_rect(Rect2(a, b - a), Color(1, 1, 1, 0.2))
+		overlay.draw_rect(Rect2(a, b - a), Color.WHITE, false, 1.0)
 
 
 func _zoom_by(step: int, anchor: Vector2) -> void:
@@ -203,15 +588,11 @@ func _update_zoom_label() -> void:
 	zoom_label.text = "%d%%" % int(ZOOM_STEPS[zoom_index] * 100)
 
 
-func _update_status(mouse: Vector2) -> void:
-	if map.is_empty():
-		return
-	var cell := Vector2i(((mouse - canvas.position) / canvas.scale.x / TILE).floor())
-	if cell.x < 0 or cell.y < 0 or cell.x >= map.width or cell.y >= map.height:
-		status_label.text = " "
+func _update_status(cell: Vector2i) -> void:
+	if not _inside(cell):
 		return
 	var i: int = cell.y * map.width + cell.x
-	var text := "(%d, %d)   lower %d   upper %d" % [cell.x, cell.y, map.lower[i], map.upper[i]]
+	var text := "(%d, %d)   lower %d   upper %d" % [cell.x, cell.y, lower[i], upper[i]]
 	for event: Dictionary in map.events:
 		if event.x == cell.x and event.y == cell.y:
 			text += "   event %d “%s”" % [event.id, event.name]

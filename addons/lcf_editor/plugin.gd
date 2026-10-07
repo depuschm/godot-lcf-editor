@@ -17,6 +17,7 @@ func _enter_tree() -> void:
 	main_screen.visible = false
 	map_view = MapView.new()
 	map_view.name = "Map"
+	map_view.undo_redo = get_undo_redo()
 	main_screen.add_child(map_view)
 	database_view = DatabaseView.new()
 	database_view.name = "Database"
@@ -55,14 +56,23 @@ func _get_plugin_name() -> String:
 
 
 func _get_unsaved_status(for_scene: String) -> String:
-	if for_scene == "" and database_view and database_view.is_modified():
-		return "The RPG Maker database has unsaved changes. Save them before closing?"
-	return ""
+	if for_scene != "":
+		return ""
+	var parts: PackedStringArray = []
+	if database_view and database_view.is_modified():
+		parts.append("the database")
+	if map_view and map_view.has_unsaved_maps():
+		parts.append("%d map(s)" % map_view.project.get_modified_maps().size())
+	if parts.is_empty():
+		return ""
+	return "The RPG Maker project has unsaved changes in %s. Save them before closing?" % " and ".join(parts)
 
 
 func _save_external_data() -> void:
 	if database_view:
 		database_view.save_if_safe()
+	if map_view:
+		map_view.save_if_safe()
 
 
 func _get_plugin_icon() -> Texture2D:

@@ -1,6 +1,7 @@
 #include "lcf_project.h"
 
 #include "database_sections.h"
+#include "tile_rules.h"
 
 #include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/classes/time.hpp>
@@ -21,6 +22,7 @@
 #include <cctype>
 #include <cstdio>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <sstream>
 #include <iterator>
@@ -125,6 +127,8 @@ Error LcfProject::load(const String &project_dir) {
 	dir = to_path(project_dir);
 	db_modified = false;
 	last_backup = String();
+	maps.clear();
+	modified_maps.clear();
 
 	const fs::path ldb_path = find_file("RPG_RT.ldb");
 	const fs::path lmt_path = find_file("RPG_RT.lmt");
@@ -249,16 +253,20 @@ Dictionary LcfProject::get_database_summary() const {
 	return summary;
 }
 
+fs::path LcfProject::map_path(int map_id) const {
+	char name[16];
+	std::snprintf(name, sizeof(name), "Map%04d.lmu", map_id);
+	return find_file(name);
+}
+
 std::unique_ptr<lcf::rpg::Map> LcfProject::load_map(int map_id) {
 	if (!is_loaded()) {
 		last_error = "No project loaded";
 		return nullptr;
 	}
-	char name[16];
-	std::snprintf(name, sizeof(name), "Map%04d.lmu", map_id);
-	const fs::path path = find_file(name);
+	const fs::path path = map_path(map_id);
 	if (path.empty()) {
-		last_error = String("Map file not found: ") + name;
+		last_error = String("Map file not found: Map") + String::num_int64(map_id).pad_zeros(4) + ".lmu";
 		return nullptr;
 	}
 	std::ifstream in(path, std::ios::binary);
@@ -269,9 +277,23 @@ std::unique_ptr<lcf::rpg::Map> LcfProject::load_map(int map_id) {
 	return map;
 }
 
+lcf::rpg::Map *LcfProject::map_ref(int map_id) {
+	auto it = maps.find(map_id);
+	if (it != maps.end()) {
+		return it->second.get();
+	}
+	auto map = load_map(map_id);
+	if (!map) {
+		return nullptr;
+	}
+	lcf::rpg::Map *ptr = map.get();
+	maps[map_id] = std::move(map);
+	return ptr;
+}
+
 Dictionary LcfProject::get_map_info(int map_id) {
 	Dictionary info;
-	auto map = load_map(map_id);
+	auto *map = map_ref(map_id);
 	if (!map) {
 		return info;
 	}
@@ -285,7 +307,7 @@ Dictionary LcfProject::get_map_info(int map_id) {
 
 Dictionary LcfProject::get_map(int map_id) {
 	Dictionary result;
-	auto map = load_map(map_id);
+	auto *map = map_ref(map_id);
 	if (!map) {
 		return result;
 	}
@@ -537,6 +559,65 @@ Error LcfProject::revert_database() {
 	return OK;
 }
 
+Error LcfProject::safe_save(const fs::path &target, const String &backup_dir,
+		const std::function<bool(std::ostream &)> &write, const std::function<bool(const fs::path &)> &verify) {
+	std::error_code ec;
+	const std::string file_name = target.filename().u8string();
+
+	// 1. Backup of the file on disk (the newest 20 per file are kept).
+	last_backup = String();
+	if (!backup_dir.is_empty()) {
+		const fs::path backups = to_path(backup_dir);
+		fs::create_directories(backups, ec);
+		const String stamp = Time::get_singleton()->get_datetime_string_from_system().replace(":", "-").replace("T", "_");
+		const fs::path backup = backups / fs::u8path(file_name + "." + stamp.utf8().get_data());
+		if (!fs::copy_file(target, backup, fs::copy_options::overwrite_existing, ec)) {
+			last_error = "Could not create backup in " + backup_dir + ": " + to_godot(ec.message());
+			return ERR_FILE_CANT_WRITE;
+		}
+		last_backup = to_godot(backup.u8string());
+		std::vector<fs::path> old;
+		for (const auto &entry : fs::directory_iterator(backups, ec)) {
+			if (entry.path().filename().u8string().rfind(file_name + ".", 0) == 0) {
+				old.push_back(entry.path());
+			}
+		}
+		std::sort(old.begin(), old.end());
+		for (size_t i = 0; i + 20 < old.size(); ++i) {
+			fs::remove(old[i], ec);
+		}
+	}
+
+	// 2. Write a temporary file next to the original.
+	fs::path tmp = target;
+	tmp += ".tmp";
+	{
+		std::ofstream out(tmp, std::ios::binary);
+		if (!out || !write(out)) {
+			out.close();
+			fs::remove(tmp, ec);
+			last_error = "Could not write " + to_godot(tmp.u8string());
+			return ERR_FILE_CANT_WRITE;
+		}
+	}
+
+	// 3. Read it back and compare with what we meant to write.
+	if (!verify(tmp)) {
+		fs::remove(tmp, ec);
+		last_error = "The written file did not read back identically; the original was not touched.";
+		return ERR_FILE_CORRUPT;
+	}
+
+	// 4. Replace the original.
+	fs::rename(tmp, target, ec);
+	if (ec) {
+		fs::remove(tmp, ec);
+		last_error = "Could not replace " + to_godot(file_name) + ": " + to_godot(ec.message());
+		return ERR_FILE_CANT_WRITE;
+	}
+	return OK;
+}
+
 Error LcfProject::save_database(const String &backup_dir) {
 	last_error = String();
 	if (!db) {
@@ -551,64 +632,197 @@ Error LcfProject::save_database(const String &backup_dir) {
 		last_error = "RPG_RT.ldb not found";
 		return ERR_FILE_NOT_FOUND;
 	}
-	std::error_code ec;
-
-	// 1. Backup of the file on disk.
-	last_backup = String();
-	if (!backup_dir.is_empty()) {
-		const fs::path backups = to_path(backup_dir);
-		fs::create_directories(backups, ec);
-		const String stamp = Time::get_singleton()->get_datetime_string_from_system().replace(":", "-").replace("T", "_");
-		const fs::path backup = backups / fs::u8path(("RPG_RT.ldb." + stamp).utf8().get_data());
-		if (!fs::copy_file(ldb_path, backup, fs::copy_options::overwrite_existing, ec)) {
-			last_error = "Could not create backup in " + backup_dir + ": " + to_godot(ec.message());
-			return ERR_FILE_CANT_WRITE;
-		}
-		last_backup = to_godot(backup.u8string());
-		std::vector<fs::path> old;
-		for (const auto &entry : fs::directory_iterator(backups, ec)) {
-			if (entry.path().filename().u8string().rfind("RPG_RT.ldb.", 0) == 0) {
-				old.push_back(entry.path());
-			}
-		}
-		std::sort(old.begin(), old.end());
-		for (size_t i = 0; i + 20 < old.size(); ++i) {
-			fs::remove(old[i], ec);
-		}
-	}
-
-	// 2. Write a temporary file next to the original.
 	lcf::rpg::Database next = *db;
 	lcf::LDB_Reader::PrepareSave(next);
-	fs::path tmp = ldb_path;
-	tmp += ".tmp";
-	{
-		std::ofstream out(tmp, std::ios::binary);
-		if (!out || !lcf::LDB_Reader::Save(out, next, encoding)) {
-			fs::remove(tmp, ec);
-			last_error = "Could not write " + to_godot(tmp.u8string());
-			return ERR_FILE_CANT_WRITE;
-		}
-	}
-
-	// 3. Read it back and compare with what we meant to write.
-	auto check = read_database(tmp);
-	if (!check || !(*check == next)) {
-		fs::remove(tmp, ec);
-		last_error = "The written database did not read back identically; the original file was not touched.";
-		return ERR_FILE_CORRUPT;
-	}
-
-	// 4. Replace the original.
-	fs::rename(tmp, ldb_path, ec);
-	if (ec) {
-		fs::remove(tmp, ec);
-		last_error = "Could not replace RPG_RT.ldb: " + to_godot(ec.message());
-		return ERR_FILE_CANT_WRITE;
+	const Error err = safe_save(ldb_path, backup_dir,
+			[&](std::ostream &out) { return lcf::LDB_Reader::Save(out, next, encoding); },
+			[&](const fs::path &tmp) {
+				auto check = read_database(tmp);
+				return check && *check == next;
+			});
+	if (err != OK) {
+		return err;
 	}
 	*db = std::move(next);
 	db_modified = false;
 	return OK;
+}
+
+// --- maps -------------------------------------------------------------------------
+
+Dictionary LcfProject::paint_map_tiles(int map_id, int layer, const PackedInt32Array &cells, int tile_id, bool auto_tile) {
+	Dictionary result;
+	last_error = String();
+	auto *map = map_ref(map_id);
+	if (!map) {
+		return result;
+	}
+	if (layer != 0 && layer != 1) {
+		last_error = "Layer must be 0 (lower) or 1 (upper)";
+		return result;
+	}
+	const int w = map->width, h = map->height;
+	auto &tiles = layer == 0 ? map->lower_layer : map->upper_layer;
+	tiles.resize(size_t(w) * h, int16_t(layer == 0 ? 0 : lcf_tiles::UPPER));
+
+	std::vector<int> painted;
+	std::map<int, int> before;
+	for (int64_t i = 0; i < cells.size(); ++i) {
+		const int cell = cells[i];
+		if (cell < 0 || cell >= w * h) continue;
+		before.emplace(cell, tiles[cell]);
+		tiles[cell] = int16_t(tile_id);
+		painted.push_back(cell);
+	}
+	if (auto_tile && layer == 0) {
+		const lcf_tiles::TileAt at = [&](int x, int y) { return int(tiles[size_t(y) * w + x]); };
+		const std::vector<int> affected = lcf_tiles::affected_cells(painted, w, h);
+		std::vector<std::pair<int, int>> updates;
+		for (int cell : affected) {
+			const int id = tiles[cell];
+			if (lcf_tiles::is_autotile(id)) {
+				updates.emplace_back(cell, lcf_tiles::autotile_variant(at, w, h, cell % w, cell / w, id));
+			}
+		}
+		for (const auto &[cell, id] : updates) {
+			before.emplace(cell, tiles[cell]);
+			tiles[cell] = int16_t(id);
+		}
+	}
+
+	PackedInt32Array changed, old_ids, new_ids;
+	for (const auto &[cell, old_id] : before) {
+		if (tiles[cell] != old_id) {
+			changed.push_back(cell);
+			old_ids.push_back(old_id);
+			new_ids.push_back(tiles[cell]);
+		}
+	}
+	if (!changed.is_empty()) {
+		modified_maps.insert(map_id);
+	}
+	result["cells"] = changed;
+	result["before"] = old_ids;
+	result["after"] = new_ids;
+	return result;
+}
+
+Error LcfProject::set_map_tiles(int map_id, int layer, const PackedInt32Array &cells, const PackedInt32Array &ids) {
+	auto *map = map_ref(map_id);
+	if (!map) {
+		return ERR_FILE_NOT_FOUND;
+	}
+	if ((layer != 0 && layer != 1) || cells.size() != ids.size()) {
+		last_error = "Bad layer or cells/ids of different length";
+		return ERR_INVALID_PARAMETER;
+	}
+	const int64_t n = int64_t(map->width) * map->height;
+	auto &tiles = layer == 0 ? map->lower_layer : map->upper_layer;
+	tiles.resize(size_t(n), int16_t(layer == 0 ? 0 : lcf_tiles::UPPER));
+	for (int64_t i = 0; i < cells.size(); ++i) {
+		if (cells[i] >= 0 && cells[i] < n) {
+			tiles[cells[i]] = int16_t(ids[i]);
+		}
+	}
+	modified_maps.insert(map_id);
+	return OK;
+}
+
+bool LcfProject::is_map_modified(int map_id) const {
+	return modified_maps.count(map_id) > 0;
+}
+
+PackedInt32Array LcfProject::get_modified_maps() const {
+	PackedInt32Array out;
+	for (int id : modified_maps) {
+		out.push_back(id);
+	}
+	return out;
+}
+
+std::unique_ptr<lcf::rpg::Map> LcfProject::read_map(const fs::path &path) const {
+	std::ifstream in(path, std::ios::binary);
+	if (!in) {
+		return nullptr;
+	}
+	lcf::LogHandler::SetHandler([](lcf::LogHandler::Level, std::string_view, void *) {});
+	auto result = lcf::LMU_Reader::Load(in, encoding);
+	lcf::LogHandler::SetHandler(nullptr);
+	return result;
+}
+
+Error LcfProject::save_map(int map_id, const String &backup_dir) {
+	last_error = String();
+	if (!modified_maps.count(map_id)) {
+		return OK;
+	}
+	auto *map = map_ref(map_id);
+	const fs::path path = map_path(map_id);
+	if (!map || path.empty()) {
+		last_error = "Map file not found";
+		return ERR_FILE_NOT_FOUND;
+	}
+	lcf::rpg::Map next = *map;
+	lcf::LMU_Reader::PrepareSave(next);
+	const lcf::EngineVersion engine = lcf::GetEngineVersion(*db);
+	const Error err = safe_save(path, backup_dir,
+			[&](std::ostream &out) { return lcf::LMU_Reader::Save(out, next, engine, encoding); },
+			[&](const fs::path &tmp) {
+				auto check = read_map(tmp);
+				return check && *check == next;
+			});
+	if (err != OK) {
+		return err;
+	}
+	*map = std::move(next);
+	modified_maps.erase(map_id);
+	return OK;
+}
+
+Error LcfProject::revert_map(int map_id) {
+	maps.erase(map_id);
+	modified_maps.erase(map_id);
+	return map_ref(map_id) ? OK : ERR_FILE_CANT_READ;
+}
+
+Error LcfProject::export_map(int map_id, const String &path) {
+	auto *map = map_ref(map_id);
+	if (!map) {
+		return ERR_FILE_NOT_FOUND;
+	}
+	std::ofstream out(to_path(path), std::ios::binary);
+	if (!out || !lcf::LMU_Reader::Save(out, *map, lcf::GetEngineVersion(*db), encoding)) {
+		last_error = "Could not write " + path;
+		return ERR_FILE_CANT_WRITE;
+	}
+	return OK;
+}
+
+Dictionary LcfProject::check_map_round_trip(int map_id) const {
+	Dictionary result;
+	const fs::path path = map_path(map_id);
+	std::ifstream in(path, std::ios::binary);
+	if (path.empty() || !in || !db) {
+		return result;
+	}
+	const std::string original((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+	PackedStringArray notes;
+	lcf::LogHandler::SetHandler([](lcf::LogHandler::Level, std::string_view message, void *out) {
+		static_cast<PackedStringArray *>(out)->push_back(String::utf8(message.data(), int(message.size())));
+	}, &notes);
+	std::istringstream source(original);
+	auto fresh = lcf::LMU_Reader::Load(source, encoding);
+	lcf::LogHandler::SetHandler(nullptr);
+	if (!fresh) {
+		return result;
+	}
+	std::ostringstream out;
+	lcf::LMU_Reader::Save(out, *fresh, lcf::GetEngineVersion(*db), encoding);
+	result["identical"] = original == out.str();
+	result["original_size"] = int64_t(original.size());
+	result["saved_size"] = int64_t(out.str().size());
+	result["notes"] = notes;
+	return result;
 }
 
 void LcfProject::_bind_methods() {
@@ -637,4 +851,12 @@ void LcfProject::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("export_database", "path"), &LcfProject::export_database);
 	ClassDB::bind_method(D_METHOD("revert_database"), &LcfProject::revert_database);
 	ClassDB::bind_method(D_METHOD("check_round_trip"), &LcfProject::check_round_trip);
+	ClassDB::bind_method(D_METHOD("paint_map_tiles", "map_id", "layer", "cells", "tile_id", "auto_tile"), &LcfProject::paint_map_tiles, DEFVAL(true));
+	ClassDB::bind_method(D_METHOD("set_map_tiles", "map_id", "layer", "cells", "ids"), &LcfProject::set_map_tiles);
+	ClassDB::bind_method(D_METHOD("is_map_modified", "map_id"), &LcfProject::is_map_modified);
+	ClassDB::bind_method(D_METHOD("get_modified_maps"), &LcfProject::get_modified_maps);
+	ClassDB::bind_method(D_METHOD("save_map", "map_id", "backup_dir"), &LcfProject::save_map);
+	ClassDB::bind_method(D_METHOD("revert_map", "map_id"), &LcfProject::revert_map);
+	ClassDB::bind_method(D_METHOD("export_map", "map_id", "path"), &LcfProject::export_map);
+	ClassDB::bind_method(D_METHOD("check_map_round_trip", "map_id"), &LcfProject::check_map_round_trip);
 }

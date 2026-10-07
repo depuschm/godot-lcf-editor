@@ -14,6 +14,8 @@
 //   10000..10143 upper layer tiles (F)
 
 #include <array>
+#include <functional>
+#include <vector>
 
 namespace lcf_tiles {
 
@@ -180,6 +182,101 @@ inline Quarters tile_quarters(int id, int water_frame = 0, int anim_frame = 0) {
 	}
 	if (tx >= 0) {
 		for (int q = 0; q < 4; ++q) out[q] = tile_quarter(tx, ty, q);
+	}
+	return out;
+}
+
+
+// --- painting -------------------------------------------------------------------
+// When a tile is painted, RPG Maker picks the autotile variant of it and of its eight
+// neighbours from what surrounds them. `at(x, y)` returns the current tile ID; cells
+// outside the map count as the same terrain (no border at the map edge).
+
+using TileAt = std::function<int(int x, int y)>;
+
+inline bool is_water(int id) { return id >= 0 && id < ANIMATED; }
+inline bool is_deep_water(int id) { return id >= DEEP_WATER && id < ANIMATED; }
+inline bool is_ground_autotile(int id) { return id >= GROUND && id < GROUND + GROUND_COUNT * 50; }
+inline bool is_autotile(int id) { return is_water(id) || is_ground_autotile(id); }
+
+// Water shores connect to any water and to the animated tiles (C block).
+inline bool joins_water(int id) { return is_water(id) || (id >= ANIMATED && id < GROUND); }
+
+// The variant of `id` at (x, y) for its current neighbours; non-autotiles are returned unchanged.
+inline int autotile_variant(const TileAt &at, int width, int height, int x, int y, int id) {
+	auto inside = [&](int nx, int ny) { return nx >= 0 && ny >= 0 && nx < width && ny < height; };
+
+	auto pattern_for = [&](const std::function<bool(int)> &same) {
+		auto same_at = [&](int dx, int dy) { return !inside(x + dx, y + dy) || same(at(x + dx, y + dy)); };
+		int sides = 0, corners = 0;
+		if (!same_at(-1, 0)) sides |= LEFT;
+		if (!same_at(0, -1)) sides |= TOP;
+		if (!same_at(1, 0)) sides |= RIGHT;
+		if (!same_at(0, 1)) sides |= BOTTOM;
+		if (!same_at(-1, -1)) corners |= TL;
+		if (!same_at(1, -1)) corners |= TR;
+		if (!same_at(1, 1)) corners |= BR;
+		if (!same_at(-1, 1)) corners |= BL;
+		return encode_pattern(sides, corners);
+	};
+
+	if (is_ground_autotile(id)) {
+		const int block = (id - GROUND) / 50;
+		const int pattern = pattern_for([&](int n) { return is_ground_autotile(n) && (n - GROUND) / 50 == block; });
+		return GROUND + block * 50 + pattern;
+	}
+	if (!is_water(id)) {
+		return id;
+	}
+
+	const int type = id / 1000; // 0 A1, 1 A2, 2 deep
+	const int shore = pattern_for(joins_water);
+
+	// Deep-water edges, one bit per quarter (TL 1, TR 2, BL 4, BR 8): deep water
+	// borders shallow water; shallow water borders deep water.
+	auto blocked = [&](int dx, int dy) {
+		if (!inside(x + dx, y + dy)) return type == 2;
+		const int n = at(x + dx, y + dy);
+		if (type == 2) return !(is_deep_water(n) || !joins_water(n));
+		return is_deep_water(n);
+	};
+	auto deep_diagonal = [&](int dx, int dy) {
+		return inside(x + dx, y + dy) && is_deep_water(at(x + dx, y + dy));
+	};
+	const bool n = blocked(0, -1), e = blocked(1, 0), s = blocked(0, 1), w = blocked(-1, 0);
+	int deep = 0;
+	if (type == 2) {
+		if (n && w && !deep_diagonal(-1, -1)) deep |= 1;
+		if (n && e && !deep_diagonal(1, -1)) deep |= 2;
+		if (s && w && !deep_diagonal(-1, 1)) deep |= 4;
+		if (s && e && !deep_diagonal(1, 1)) deep |= 8;
+	} else {
+		if (n && w) deep |= 1;
+		if (n && e) deep |= 2;
+		if (s && w) deep |= 4;
+		if (s && e) deep |= 8;
+	}
+	return type * 1000 + deep * 50 + shore;
+}
+
+// Cells whose variant may change when `painted` cells change: the cells and their
+// eight neighbours, inside the map, without duplicates.
+inline std::vector<int> affected_cells(const std::vector<int> &painted, int width, int height) {
+	std::vector<char> mark(size_t(width) * height, 0);
+	std::vector<int> out;
+	for (int cell : painted) {
+		const int cx = cell % width, cy = cell / width;
+		for (int dy = -1; dy <= 1; ++dy) {
+			for (int dx = -1; dx <= 1; ++dx) {
+				const int x = cx + dx, y = cy + dy;
+				if (x < 0 || y < 0 || x >= width || y >= height) continue;
+				const int i = y * width + x;
+				if (!mark[i]) {
+					mark[i] = 1;
+					out.push_back(i);
+				}
+			}
+		}
 	}
 	return out;
 }

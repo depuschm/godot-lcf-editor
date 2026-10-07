@@ -4,7 +4,7 @@
 
 Godot editor for RPG Maker 2000/2003 projects (LCF format), built on [liblcf](https://github.com/EasyRPG/liblcf). Extensible through plugins, playtested with [EasyRPG Player](https://github.com/EasyRPG/Player).
 
-> **Status: early prototype.** The editor plugin opens an existing RPG Maker 2000/2003 project, renders its maps, and lets you browse and edit its whole database inside Godot. Map and event editing come next — see the [roadmap](#roadmap). Keep backups of your projects while trying it.
+> **Status: early prototype.** The editor plugin opens an existing RPG Maker 2000/2003 project, lets you paint its maps and browse and edit its whole database inside Godot. Event editing comes next — see the [roadmap](#roadmap). Keep backups of your projects while trying it.
 
 ## Vision
 
@@ -24,12 +24,14 @@ The full vision, the existing landscape and the options considered are in [`docs
 
 ## What works today
 
-![The Godot editor with the LCF Project dock on the left showing the demo project and its map tree, and the LCF Editor screen's Map tab rendering the World map: grass, a lake with shoreline, dirt roads, a stone plaza, trees and an event marker.](docs/images/editor-map.png)
+![The Godot editor with the LCF Project dock on the left and the LCF Editor screen's Map tab: the World map with a newly painted pond (with shoreline) and dirt path, the layer and tool buttons (Lower layer, Rectangle selected), "Unsaved changes" with Save map and Revert, and the tile palette on the right with the dirt path autotile selected.](docs/images/editor-map.png)
 
 - Open an RPG Maker 2000 or 2003 project folder from the **LCF Project** dock.
 - Detects engine version (2000/2003) and text encoding (from `RPG_RT.ini` or by analysing the database).
 - Shows the map tree, including areas, and basic facts per map.
-- Selecting a map opens it in the **LCF Editor** screen (next to 2D, 3D and Script), **Map** tab: lower and upper layer with the project's chipset, including ground autotiles, water with shores and deep-water edges, and event markers. Zoom with the mouse wheel, pan with the middle or right mouse button; the status line shows the tile IDs under the cursor.
+- Selecting a map opens it in the **LCF Editor** screen (next to 2D, 3D and Script), **Map** tab: lower and upper layer with the project's chipset, including ground autotiles, water with shores and deep-water edges, and event markers. Zoom with the mouse wheel, pan with the middle mouse button (or Space + drag); the status line shows the tile IDs under the cursor.
+- **Painting maps:** pick a tile in the palette (right of the map) and paint with **Pencil**, **Rectangle** or **Fill** on the lower or upper layer; right-click or **Pick** takes the tile under the cursor. Autotiles and water connect automatically: the painted tiles and their neighbours get the variants RPG Maker would choose, including shores and deep-water edges. Hold **Shift** to place the exact tile without autotiling. Every stroke can be undone with Godot's undo (Ctrl+Z).
+- **Saving maps** works like the database: **Save map** makes a backup, writes a temporary file, reads it back and compares it before replacing `Map####.lmu`; **Revert** drops unsaved changes, and Godot asks about unsaved maps when it closes.
 - The **Database** tab shows every section of the database (actors, classes, skills, items, enemies, troops, states, vocabulary, system, common events, switches, variables, …). Every field of the selected entry is listed, nested structures can be expanded, event commands appear by name with their indentation, and references such as `class_id` or `switch_id` show the name they point to. Fields come straight from liblcf's own description of the format, so new fields (including Maniacs and EasyRPG extensions) appear automatically.
 - **Editing the database:** double-click a field to change it (checkbox for yes/no, number box, text field). **Save** writes `RPG_RT.ldb`; **Revert** drops unsaved changes, and Godot warns about unsaved changes when it closes. Event commands are still read-only.
 - **Safe saving:** before every save the current file is copied to a backup (the newest 20 are kept in Godot's user data folder, under `backups/`). The new database is written to a temporary file, read back and compared before it replaces the original. The save counter is increased like RPG Maker does.
@@ -51,9 +53,11 @@ if project.load("C:/Games/MyRpg") == OK:
 
 ![The Database tab with the demo's actor "Hero" selected: its fields on the right, the title just changed to "Knight of the Lake", "Unsaved changes" with Save and Revert buttons at the top, references such as class_id shown as "1 · Warrior", and the number editor open for final_level.](docs/images/editor-database.png)
 
-The autotile and water composition (`extension/src/tile_rules.h`) is our own implementation of the chipset format; it was checked against EasyRPG Player's reference tables for every ground autotile, water combination and animation frame.
+The autotile and water rules (`extension/src/tile_rules.h`) are our own implementation of the chipset format. Drawing was checked against EasyRPG Player's reference tables for every ground autotile, water combination and animation frame. Painting was checked against maps saved by the real RPG Maker editor (EasyRPG's TestGame): recomputing every autotile reproduces the stored variants on all regularly painted maps; the differences are in test rooms where variants were placed by hand on purpose. Painting only recomputes the painted tiles and their neighbours, so hand-placed variants elsewhere stay as they are.
 
-**Not yet:** editing maps and event commands, adding or removing database entries, RTP graphics (chipsets must be inside the project), tile animation.
+Untouched maps also save back byte for byte: all maps of TestGame-2003, -Maniacs and -EasyRPG and 77 of 78 maps of TestGame-2000 (the remaining one, and any other map where that is not the case, makes the editor ask before saving).
+
+**Not yet:** editing events and event commands, adding or removing database entries, map properties (size, chipset), RTP graphics (chipsets must be inside the project), tile animation.
 
 ## Repository layout
 
@@ -111,7 +115,7 @@ In a fresh checkout, run `godot --headless --path . --import` once first. That v
 
 ### Round-trip test
 
-Checks byte-exact saving, the edit path for every entry, a real edit with backup and the save counter. It always works on a copy in Godot's user data folder, never on the project itself:
+Checks byte-exact saving of the database and every map, the edit path for every database entry, a real edit with backup and the save counter, and painting a small lake (shores, undo, map saving). It always works on a copy in Godot's user data folder, never on the project itself:
 
 ```bash
 godot --headless --path . --script res://tests/test_roundtrip.gd -- /path/to/RPG/project
@@ -142,6 +146,7 @@ cmake -S tools -B build-tools && cmake --build build-tools
 | M0 | Evaluate EasyRPG Editor; contact the EasyRPG team about a plugin API |
 | M1 | liblcf in Godot: load a project ✅ |
 | M2 | Map view with correct chipsets and autotiles ✅ |
+| M2b | Map painting with autotiles, undo and safe saving ✅ |
 | M3a | Database browser ✅ |
 | M3b | Database editing and safe saving (backups, byte-identical round trip) ✅ |
 | M4 | Event editor with data-driven command dialogs |

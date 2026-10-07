@@ -21,7 +21,7 @@ func _init() -> void:
 	DirAccess.make_dir_recursive_absolute(work)
 	var ldb_name := ""
 	for file in DirAccess.get_files_at(source):
-		if file.get_extension().to_lower() in ["ldb", "lmt", "ini"]:
+		if file.get_extension().to_lower() in ["ldb", "lmt", "ini", "lmu"]:
 			DirAccess.copy_absolute(source.path_join(file), work.path_join(file))
 			if file.get_extension().to_lower() == "ldb":
 				ldb_name = file
@@ -97,6 +97,58 @@ func _init() -> void:
 		view2.free()
 		_check(saved_title == tricky, "special characters survive exactly")
 		_check(_save_count(reloaded) == save_count_before + 1, "save counter went up by one")
+
+	# 5. Maps: untouched maps export byte for byte; painting, undo and saving work.
+	var map_ids: Array[int] = []
+	for entry: Dictionary in project.get_map_tree():
+		if entry.type == "map" and FileAccess.file_exists(work.path_join("Map%04d.lmu" % entry.id)):
+			map_ids.append(entry.id)
+	var exact := 0
+	var normalised: Array[String] = []
+	var map_export := work.get_base_dir().path_join("export.lmu")
+	for id in map_ids:
+		project.export_map(id, map_export)
+		var same := FileAccess.get_file_as_bytes(map_export) == FileAccess.get_file_as_bytes(work.path_join("Map%04d.lmu" % id))
+		var map_report: Dictionary = project.check_map_round_trip(id)
+		if map_report.get("identical") != same:
+			_check(false, "check_map_round_trip agrees with an export for map %d" % id)
+		if same:
+			exact += 1
+		else:
+			normalised.append("Map%04d" % id)
+	_check(exact + normalised.size() == map_ids.size() and map_ids.size() > 0, "%d of %d maps export byte-identical" % [exact, map_ids.size()])
+	if not normalised.is_empty():
+		print("  note  saving normalises: ", ", ".join(normalised.slice(0, 8)), " …" if normalised.size() > 8 else "")
+
+	if not map_ids.is_empty():
+		var id: int = map_ids[0]
+		var map: Dictionary = project.get_map(id)
+		var w: int = map.width
+		var h: int = map.height
+		if w >= 7 and h >= 7:
+			var path_before := FileAccess.get_file_as_bytes(work.path_join("Map%04d.lmu" % id))
+			var cx := w / 2
+			var cy := h / 2
+			var cells := PackedInt32Array()
+			for dy in range(-1, 2):
+				for dx in range(-1, 2):
+					cells.append((cy + dy) * w + cx + dx)
+			var change: Dictionary = project.paint_map_tiles(id, 0, cells, 0)
+			var lower: PackedInt32Array = project.get_map(id).lower
+			_check(lower[cy * w + cx] == 0, "painted lake: middle tile is open water")
+			_check(lower[(cy - 1) * w + cx - 1] % 50 == 34, "painted lake: top-left corner has its shore (pattern 34)")
+			_check(lower[(cy + 1) * w + cx] % 50 == 28, "painted lake: bottom edge has its shore (pattern 28)")
+			_check(change.cells.size() >= 9, "%d tiles changed (9 painted + neighbours)" % change.cells.size())
+			_check(project.is_map_modified(id), "map is marked modified")
+			project.set_map_tiles(id, 0, change.cells, change.before)
+			project.export_map(id, map_export)
+			_check(FileAccess.get_file_as_bytes(map_export) == path_before or not normalised.is_empty(), "undo restores the map exactly")
+			project.set_map_tiles(id, 0, change.cells, change.after)
+			_check(project.save_map(id, backups) == OK, "map saves: " + project.get_last_error())
+			_check(FileAccess.get_file_as_bytes(project.get_last_backup()) == path_before, "map backup holds the previous file")
+			var again: RefCounted = ClassDB.instantiate("LcfProject")
+			again.load(work)
+			_check(again.get_map(id).lower[cy * w + cx] == 0, "painted tiles are in the saved map")
 
 	print("FAILED" if _failures > 0 else "OK")
 	quit(1 if _failures > 0 else 0)

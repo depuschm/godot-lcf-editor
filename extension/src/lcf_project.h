@@ -7,7 +7,11 @@
 #include <godot_cpp/variant/string.hpp>
 
 #include <filesystem>
+#include <functional>
+#include <iosfwd>
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
 
 namespace lcf::rpg {
@@ -107,20 +111,49 @@ public:
 	// `notes` lists what liblcf reported while reading (e.g. skipped unknown data).
 	Dictionary check_round_trip() const;
 
+	// --- map editing -------------------------------------------------------------
+	// Maps are edited in memory; get_map() returns the edited state.
+
+	// Paints `tile_id` into `cells` (indices y * width + x) of layer 0 (lower) or 1
+	// (upper). With auto_tile on the lower layer, the painted cells and their
+	// neighbours get the autotile/water variants RPG Maker would pick. Returns the
+	// changed cells for undo: { cells, before, after } (PackedInt32Arrays).
+	Dictionary paint_map_tiles(int map_id, int layer, const PackedInt32Array &cells, int tile_id, bool auto_tile = true);
+
+	// Sets exact tile IDs (no autotiling), e.g. for undo/redo.
+	Error set_map_tiles(int map_id, int layer, const PackedInt32Array &cells, const PackedInt32Array &ids);
+
+	bool is_map_modified(int map_id) const;
+	PackedInt32Array get_modified_maps() const;
+
+	// Saves Map####.lmu with the same safeguards as save_database().
+	Error save_map(int map_id, const String &backup_dir);
+	Error revert_map(int map_id);
+	Error export_map(int map_id, const String &path);
+	Dictionary check_map_round_trip(int map_id) const;
+
 protected:
 	static void _bind_methods();
 
 private:
 	Error fail(const String &message);
 	std::filesystem::path find_file(const std::string &name) const;
+	std::filesystem::path map_path(int map_id) const;
 	std::unique_ptr<lcf::rpg::Map> load_map(int map_id);
+	lcf::rpg::Map *map_ref(int map_id);
 	std::unique_ptr<lcf::rpg::Database> read_database(const std::filesystem::path &path) const;
+	std::unique_ptr<lcf::rpg::Map> read_map(const std::filesystem::path &path) const;
+	Error safe_save(const std::filesystem::path &target, const String &backup_dir,
+			const std::function<bool(std::ostream &)> &write,
+			const std::function<bool(const std::filesystem::path &)> &verify);
 
 	std::filesystem::path dir;
 	std::string encoding;
 	std::string game_title;
 	std::unique_ptr<lcf::rpg::Database> db;
 	std::unique_ptr<lcf::rpg::TreeMap> tree;
+	std::map<int, std::unique_ptr<lcf::rpg::Map>> maps;
+	std::set<int> modified_maps;
 	mutable String last_error;
 	bool db_modified = false;
 	String last_backup;
