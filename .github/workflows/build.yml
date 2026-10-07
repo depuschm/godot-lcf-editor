@@ -151,11 +151,13 @@ jobs:
           path: vcpkg-cache
           key: vcpkg-${{ runner.os }}-${{ hashFiles('.github/workflows/build.yml') }}-${{ github.run_id }}
 
-      - name: Cache patched EasyRPG Player
-        uses: actions/cache@v4
+      - name: Restore patched EasyRPG Player build
+        uses: actions/cache/restore@v4
         with:
           path: runtime/easyrpg-player/build
           key: player-${{ runner.os }}-${{ hashFiles('runtime/easyrpg-player/*.patch', 'runtime/easyrpg-player/build.sh') }}
+          # An older build folder still saves most of the compiling
+          restore-keys: player-${{ runner.os }}-
 
       - name: Build patched EasyRPG Player
         run: |
@@ -179,6 +181,12 @@ jobs:
           "$player" --version | tee player-version.txt
           echo "PATCHED_PLAYER=$player" >> "$GITHUB_ENV"
           echo "::notice title=Patched EasyRPG Player (${{ matrix.name }})::$(head -n 1 player-version.txt)"
+
+      - name: Save patched EasyRPG Player build
+        uses: actions/cache/save@v4
+        with:
+          path: runtime/easyrpg-player/build
+          key: player-${{ runner.os }}-${{ hashFiles('runtime/easyrpg-player/*.patch', 'runtime/easyrpg-player/build.sh') }}-${{ github.run_id }}
 
       - name: Pixel movement runtime test
         run: |

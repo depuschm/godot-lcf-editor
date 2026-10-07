@@ -46,17 +46,14 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPLAYER_TARGET_PLATFORM=SDL2 \
 	"-DPLAYER_VERSION_APPEND=(godot-lcf-editor patches)" \
 	${PLAYER_CMAKE_ARGS:-} >&2
 cmake --build build --config Release --parallel "$(nproc 2>/dev/null || echo 4)" >&2
-for exe in build/Release/easyrpg-player.exe build/easyrpg-player.exe build/easyrpg-player; do
-	if [ -f "$exe" ]; then
+# (bash globbing rather than find, which can be Windows' own find.exe in Git Bash)
+shopt -s globstar nullglob
+for exe in build/**/easyrpg-player.exe build/**/easyrpg-player; do
+	if [ -f "$exe" ] && [[ "$exe" != *CMakeFiles* ]]; then
 		echo "$WORK/Player/$exe"
 		exit 0
 	fi
 done
-exe="$( (find build -name 'easyrpg-player.exe' -o -name 'easyrpg-player' -type f | grep -v CMakeFiles || true) | head -n 1)"
-if [ -n "$exe" ]; then
-	echo "$WORK/Player/$exe"
-	exit 0
-fi
 echo "build.sh: the built easyrpg-player was not found; executables in build:" >&2
-find build -name '*.exe' -not -path '*CMakeFiles*' >&2 || true
+printf '%s\n' build/**/*.exe >&2
 exit 1

@@ -22,7 +22,12 @@ case "$(uname -s)" in
 	MINGW*|MSYS*|CYGWIN*) PLATFORM=windows-x64; NAME=easyrpg-player.exe ;;
 	*) PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"; NAME=easyrpg-player ;;
 esac
-EXE="$(find "$PLAYER/build" -name "$NAME" -type f -not -path '*CMakeFiles*' | head -n 1)"
+shopt -s globstar nullglob
+EXE=""
+for exe in "$PLAYER"/build/**/"$NAME"; do
+	if [ -f "$exe" ] && [[ "$exe" != *CMakeFiles* ]]; then EXE="$exe"; break; fi
+done
+[ -n "$EXE" ] || { echo "package.sh: $NAME not found in $PLAYER/build" >&2; exit 1; }
 
 STAGE="$OUT/stage-$PLATFORM"
 rm -rf "$STAGE"
