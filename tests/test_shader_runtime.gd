@@ -141,7 +141,11 @@ func _stats(image: Image) -> Dictionary:
 
 func _brief(result: Dictionary) -> String:
 	if not result.get("ok", false):
-		return "no frame captured (exit %s) %s" % [result.get("exit"), String(result.get("log", "")).right(300)]
+		var notes := PackedStringArray()
+		for line in String(result.get("log", "")).split("\n"):
+			if "ScreenShader" in line or "SDL2:" in line or "rror" in line:
+				notes.append(line.strip_edges().right(160))
+		return "no frame captured (exit %s): %s" % [result.get("exit"), " | ".join(notes.slice(-6))]
 	var m: Dictionary = result.mean
 	return "%d%% green, %d%% not sepia, mean rgb %d %d %d" % [roundi(result.green * 100), roundi(result.not_sepia * 100), m.r, m.g, m.b]
 

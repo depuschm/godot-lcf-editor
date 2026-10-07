@@ -194,7 +194,8 @@ jobs:
       - name: Pixel movement runtime test
         run: |
           if [ "$RUNNER_OS" = Linux ]; then run="xvfb-run -a"; else run=""; fi
-          $run "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_pixel_runtime.gd -- "$PATCHED_PLAYER" | tee runtime.log
+          $run "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_pixel_runtime.gd -- "$PATCHED_PLAYER" | tee runtime.log || true
+          grep "FAIL" runtime.log | head -n 10 | while read -r line; do echo "::error title=${{ matrix.name }}::$line"; done
           if grep -q "SCRIPT ERROR" runtime.log; then echo "::error::Script errors in runtime.log"; exit 1; fi
           echo "::notice title=Pixel movement in EasyRPG Player (${{ matrix.name }})::$(grep -c '  ok ' runtime.log) checks ok, result: $(tail -n 1 runtime.log)"
           tail -n 1 runtime.log | grep -q "^OK"
@@ -225,7 +226,8 @@ jobs:
       - name: Screen shader runtime test
         run: |
           if [ "$RUNNER_OS" = Linux ]; then run="xvfb-run -a"; player="$PATCHED_PLAYER"; else run=""; player="$GL_PLAYER"; fi
-          $run "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_shader_runtime.gd -- "$player" | tee shader-runtime.log
+          $run "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_shader_runtime.gd -- "$player" | tee shader-runtime.log || true
+          grep "FAIL" shader-runtime.log | head -n 10 | while read -r line; do echo "::error title=${{ matrix.name }}::$line"; done
           if grep -q "SCRIPT ERROR" shader-runtime.log; then echo "::error::Script errors in shader-runtime.log"; exit 1; fi
           echo "::notice title=Screen shaders in EasyRPG Player (${{ matrix.name }})::$(grep -c '  ok ' shader-runtime.log) checks ok, result: $(tail -n 1 shader-runtime.log)"
           tail -n 1 shader-runtime.log | grep -q "^OK"
