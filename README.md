@@ -1,5 +1,7 @@
 # godot-lcf-editor
 
+[![Build and test](https://github.com/depuschm/godot-lcf-editor/actions/workflows/build.yml/badge.svg)](https://github.com/depuschm/godot-lcf-editor/actions/workflows/build.yml)
+
 Godot editor for RPG Maker 2000/2003 projects (LCF format), built on [liblcf](https://github.com/EasyRPG/liblcf). Extensible through plugins, playtested with [EasyRPG Player](https://github.com/EasyRPG/Player).
 
 > **Status: early prototype.** The editor plugin opens an existing RPG Maker 2000/2003 project, renders its maps, and lets you browse and edit its whole database inside Godot. Map and event editing come next — see the [roadmap](#roadmap). Keep backups of your projects while trying it.
@@ -68,6 +70,15 @@ tools/                     Demo generators: chipset (Python), maps from text gri
 docs/                      Vision document and README images
 ```
 
+## Download
+
+Every push is built and tested on **Windows** and **Linux** by [GitHub Actions](https://github.com/depuschm/godot-lcf-editor/actions/workflows/build.yml): the smoke test, the round-trip test on the demo and on EasyRPG's TestGame (2000, 2003, Maniacs), and a check that the Godot editor loads the plugin.
+
+- **Releases:** ready-to-use addon zips with Windows and Linux binaries appear under [Releases](https://github.com/depuschm/godot-lcf-editor/releases) once a version is tagged.
+- **Latest build:** open the newest successful run on the [Actions page](https://github.com/depuschm/godot-lcf-editor/actions/workflows/build.yml) and download `lcf_editor-Windows` or `lcf_editor-Linux` (needs a GitHub login).
+
+To use a download, put the `lcf_editor` folder into your Godot project's `addons/` folder (or clone this repository and copy it into `addons/lcf_editor`), then enable **LCF Editor** under *Project → Project Settings → Plugins*. macOS builds are not provided yet.
+
 ## Building
 
 **Requirements:** Godot 4.5 or newer, CMake 3.17+, a C++17 compiler, and ICU for text encodings
@@ -94,7 +105,7 @@ Already cloned without `--recursive`? Run `git submodule update --init --recursi
 godot --headless --path . --script res://tests/test_load_demo.gd
 ```
 
-It loads `demo/` through the extension and prints the map tree. Tested with Godot 4.5.1 and 4.7.2 on Linux.
+It loads `demo/` through the extension and prints the map tree. CI runs it with Godot 4.5.1 on Windows and Linux; it was also tested with 4.7.2.
 
 In a fresh checkout, run `godot --headless --path . --import` once first. That very first headless import can abort while Godot registers the extension (godot-cpp's own example does the same); simply run it again.
 

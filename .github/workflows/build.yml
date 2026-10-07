@@ -3,6 +3,7 @@ name: Build and test
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -95,3 +96,31 @@ jobs:
         with:
           name: lcf_editor-${{ runner.os }}
           path: addons/lcf_editor
+
+  release:
+    # Runs for version tags (v0.1.0, ...): one addon zip with Windows and Linux binaries.
+    name: Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Combine addon
+        run: |
+          mkdir -p addons
+          cp -r artifacts/lcf_editor-Linux addons/lcf_editor
+          cp artifacts/lcf_editor-Windows/bin/* addons/lcf_editor/bin/
+          ls -l addons/lcf_editor/bin
+          zip -r "lcf_editor-${GITHUB_REF_NAME}.zip" addons
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "lcf_editor-${GITHUB_REF_NAME}.zip" \
+            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes --prerelease
