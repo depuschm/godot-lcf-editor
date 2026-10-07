@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 400" width="880" height="400" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>godot-lcf-editor architecture</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7d8590"/>
+    </marker>
+  </defs>
+
+  <!-- One plugin = editor half + runtime half -->
+  <rect x="40" y="20" width="800" height="104" rx="14" fill="none" stroke="#7d8590" stroke-width="1.5" stroke-dasharray="5 5"/>
+  <text x="440" y="44" text-anchor="middle" font-size="15" font-weight="700" fill="#7d8590">One plugin</text>
+
+  <rect x="70" y="58" width="300" height="52" rx="10" fill="#e8f0fb" stroke="#4a78c2" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <text x="220" y="80" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2d4a">Editor half</text>
+  <text x="220" y="99" text-anchor="middle" font-size="12.5" fill="#33415c">command schema · tools · previews</text>
+
+  <rect x="510" y="58" width="300" height="52" rx="10" fill="#e9f6ee" stroke="#3a9a5b" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <text x="660" y="80" text-anchor="middle" font-size="14" font-weight="600" fill="#1d3a28">Runtime half</text>
+  <text x="660" y="99" text-anchor="middle" font-size="12.5" fill="#2f4f3b">new mechanics · shaders</text>
+
+  <!-- Main components -->
+  <rect x="70" y="160" width="300" height="72" rx="12" fill="#e8f0fb" stroke="#4a78c2" stroke-width="2"/>
+  <text x="220" y="190" text-anchor="middle" font-size="17" font-weight="700" fill="#1f2d4a">Godot Editor</text>
+  <text x="220" y="212" text-anchor="middle" font-size="13" fill="#33415c">LCF Editor plugin: maps, database, events</text>
+
+  <rect x="510" y="160" width="300" height="72" rx="12" fill="#e9f6ee" stroke="#3a9a5b" stroke-width="2"/>
+  <text x="660" y="190" text-anchor="middle" font-size="17" font-weight="700" fill="#1d3a28">EasyRPG Player</text>
+  <text x="660" y="212" text-anchor="middle" font-size="13" fill="#2f4f3b">runs and tests the game</text>
+
+  <rect x="290" y="300" width="300" height="72" rx="12" fill="#f6f1e4" stroke="#b08a2e" stroke-width="2"/>
+  <text x="440" y="330" text-anchor="middle" font-size="17" font-weight="700" fill="#3d3016">Project files</text>
+  <text x="440" y="352" text-anchor="middle" font-size="13" fill="#57472a">RPG Maker 2000/2003 format (LCF)</text>
+
+  <!-- Arrows -->
+  <line x1="220" y1="112" x2="220" y2="156" stroke="#7d8590" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="660" y1="112" x2="660" y2="156" stroke="#7d8590" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <line x1="374" y1="196" x2="506" y2="196" stroke="#7d8590" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="440" y="186" text-anchor="middle" font-size="13" font-weight="600" fill="#7d8590">Test Play</text>
+
+  <polyline points="220,234 220,336 286,336" fill="none" stroke="#7d8590" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="210" y="290" text-anchor="end" font-size="13" font-weight="600" fill="#7d8590">reads &amp; writes via</text>
+  <text x="210" y="307" text-anchor="end" font-size="13" font-weight="600" fill="#7d8590">liblcf (GDExtension)</text>
+
+  <polyline points="594,336 660,336 660,236" fill="none" stroke="#7d8590" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="672" y="290" font-size="13" font-weight="600" fill="#7d8590">loads via</text>
+  <text x="672" y="307" font-size="13" font-weight="600" fill="#7d8590">liblcf</text>
+</svg>

@@ -14,9 +14,15 @@ This project aims to change that:
 - **EasyRPG Player as the runtime.** Games are played and tested with the open-source reimplementation of the RPG Maker runtime.
 - **Everything is a plugin.** A feature such as pixel-perfect movement or shader support ships as an *editor half* (dialogs, tools, previews) and a *runtime half* (the mechanic in the player). Event command dialogs are generated from data, so a plugin registers a new command and gets its dialog for free.
 
+<p align="center">
+  <img src="docs/images/architecture.svg" alt="Architecture: a plugin has an editor half that extends the Godot editor and a runtime half that extends EasyRPG Player. The editor reads and writes RPG Maker 2000/2003 project files through liblcf; EasyRPG Player loads the same files and is launched for Test Play." width="760">
+</p>
+
 The full vision, the existing landscape and the options considered are in [`docs/vision.tex`](docs/vision.tex).
 
 ## What works today
+
+<img src="docs/images/editor-dock.png" alt="The LCF Project dock in the Godot editor, showing the demo project's summary, its map tree with the Town map selected, and that map's size, chipset and event count." width="300" align="right">
 
 - Open an RPG Maker 2000 or 2003 project folder from the **LCF Project** dock.
 - Detects engine version (2000/2003) and text encoding (from `RPG_RT.ini` or by analysing the database).
@@ -31,6 +37,8 @@ if project.load("C:/Games/MyRpg") == OK:
         print(entry.name, " ", entry.type)
 ```
 
+<br clear="right">
+
 ## Repository layout
 
 ```
@@ -42,7 +50,7 @@ thirdparty/godot-cpp/      git submodule – Godot C++ bindings
 demo/                      Tiny generated test project (no RPG Maker assets)
 tests/                     Headless smoke test
 tools/                     Helper programs (demo project generator)
-docs/vision.tex            Vision document
+docs/                      Vision document and README images
 ```
 
 ## Building

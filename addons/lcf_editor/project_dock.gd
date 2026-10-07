@@ -13,7 +13,7 @@ var details: Label
 
 
 func _ready() -> void:
-	custom_minimum_size = Vector2(220, 0)
+	custom_minimum_size = Vector2(260, 0)
 
 	var open_button := Button.new()
 	open_button.text = "Open RPG Maker project…"
@@ -76,7 +76,7 @@ func open_project(path: String) -> void:
 	var entries: Array = project.get_map_tree()
 	var map_count := entries.filter(func(e: Dictionary) -> bool: return e.type == "map").size()
 	var db: Dictionary = project.get_database_summary()
-	summary.text = "%s\nRPG Maker %s · %s\n%d maps · %d actors · %d common events" % [
+	summary.text = "%s\nRPG Maker %s · %s\nMaps: %d   Actors: %d\nCommon events: %d" % [
 		title, project.get_engine(), project.get_encoding(),
 		map_count, db.actors, db.common_events,
 	]

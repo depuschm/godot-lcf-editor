@@ -9,7 +9,7 @@ var dock: Control
 func _enter_tree() -> void:
 	dock = ProjectDock.new()
 	dock.name = "LCF Project"
-	add_control_to_dock(DOCK_SLOT_LEFT_UR, dock)
+	add_control_to_dock(DOCK_SLOT_LEFT_UL, dock)
 
 
 func _exit_tree() -> void:

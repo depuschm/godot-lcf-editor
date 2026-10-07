@@ -7,6 +7,9 @@ project(lcf_editor LANGUAGES CXX)
 set(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# Keep Godot from scanning the build folder when it lives inside the project.
+file(WRITE "${CMAKE_BINARY_DIR}/.gdignore" "")
+
 option(LCF_WITH_ICU "Use ICU for text encodings (needed for Japanese, Polish, ... projects)" ON)
 
 # --- liblcf (static, only the parts the editor needs) ---

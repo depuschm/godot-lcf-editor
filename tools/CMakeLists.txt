@@ -3,6 +3,8 @@ project(lcf_editor_tools LANGUAGES CXX)
 
 # Helper programs for development; not part of the Godot addon.
 
+file(WRITE "${CMAKE_BINARY_DIR}/.gdignore" "")
+
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(LIBLCF_WITH_INI OFF CACHE BOOL "" FORCE)
 set(LIBLCF_WITH_XML OFF CACHE BOOL "" FORCE)
