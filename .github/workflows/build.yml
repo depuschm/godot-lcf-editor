@@ -169,7 +169,7 @@ jobs:
           if ! runtime/easyrpg-player/build.sh > player-path.txt 2> player-build.log; then
             # Show the errors as an annotation (the full log is in the step output)
             cat player-build.log
-            errors="$( (grep -iE "error|fatal|could not|not found" player-build.log || tail -n 30 player-build.log) | tail -n 40)"
+            errors="$( (grep -iE "error|fatal|could not|not found" player-build.log || true) | tail -n 25; echo ...; tail -n 25 player-build.log)"
             echo "::error title=Patched EasyRPG Player build (${{ matrix.name }})::$(printf '%s' "$errors" | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')"
             exit 1
           fi
