@@ -359,7 +359,6 @@ cmake -S tools -B build-tools && cmake --build build-tools
 | M6 | Test Play with EasyRPG Player; runtime extension mechanism (comment commands, plugin data) ✅ |
 | M7a | Showcase: pixel-perfect movement — editor plugin and EasyRPG Player patch (prototype) ✅ |
 | M7b | Showcase: screen shaders — editor plugin with live preview and EasyRPG Player patch (prototype) ✅ |
-| M8 | Proposal to the EasyRPG team: a plugin interface in the Player instead of patches |
 
 ## Contributing
 
