@@ -43,6 +43,7 @@ var project: RefCounted  # LcfProject
 var setter: Callable
 var names_cache := {}  # section key -> { id: name }
 
+var _names: LcfCommands.Names
 var _edit_dialog: ConfirmationDialog
 var _editing_item: TreeItem
 var _editor_control: Control
@@ -68,6 +69,7 @@ func _init() -> void:
 ## Child elements whose tag is in `hidden` are left out.
 func show_node(node: Dictionary, base_path := PackedInt32Array(), hidden: Array = []) -> void:
 	clear()
+	_names = null
 	var tree_root := create_item()
 	if node.is_empty():
 		return
@@ -192,7 +194,14 @@ func _add_command(parent: TreeItem, command: Dictionary) -> void:
 	var params := PackedInt32Array()
 	for part in String(values.get("parameters", "")).split(" ", false):
 		params.append(int(part))
-	var line := CommandText.describe(project, int(values.get("code", "0")), values.get("string", ""), params)
+	var code := int(values.get("code", "0"))
+	var line := CommandText.describe(project, code, values.get("string", ""), params)
+	var schema := LcfCommands.get_schema(code)
+	if not schema.is_empty():
+		if _names == null:
+			_names = LcfCommands.Names.new(project)
+		var full := { "code": code, "indent": int(values.get("indent", "0")), "string": values.get("string", ""), "parameters": params }
+		line.detail = LcfCommands.summary(schema, full, _names)
 	var item := create_item(parent)
 	item.set_text(0, "  ".repeat(int(values.get("indent", "0"))) + line.name)
 	item.set_tooltip_text(0, line.name)

@@ -4,7 +4,7 @@
 
 Godot editor for RPG Maker 2000/2003 projects (LCF format), built on [liblcf](https://github.com/EasyRPG/liblcf). Extensible through plugins, playtested with [EasyRPG Player](https://github.com/EasyRPG/Player).
 
-> **Status: early prototype.** The editor plugin opens an existing RPG Maker 2000/2003 project, lets you paint its maps, edit its events and browse and edit its whole database inside Godot. Dialogs for individual event commands come next — see the [roadmap](#roadmap). Keep backups of your projects while trying it.
+> **Status: early prototype.** The editor plugin opens an existing RPG Maker 2000/2003 project, lets you paint its maps, edit its events and their commands, and browse and edit its whole database inside Godot. A plugin API for the editor and Test Play come next — see the [roadmap](#roadmap). Keep backups of your projects while trying it.
 
 ## Vision
 
@@ -32,7 +32,8 @@ The full vision, the existing landscape and the options considered are in [`docs
 - Selecting a map opens it in the **LCF Editor** screen (next to 2D, 3D and Script), **Map** tab: lower and upper layer with the project's chipset, including ground autotiles, water with shores and deep-water edges, and event markers. Zoom with the mouse wheel, pan with the middle mouse button (or Space + drag); the status line shows the tile IDs under the cursor.
 - **Painting maps:** pick a tile in the palette (right of the map) and paint with **Pencil**, **Rectangle** or **Fill** on the lower or upper layer; right-click or **Pick** takes the tile under the cursor. Autotiles and water connect automatically: the painted tiles and their neighbours get the variants RPG Maker would choose, including shores and deep-water edges. Hold **Shift** to place the exact tile without autotiling. Every stroke can be undone with Godot's undo (Ctrl+Z).
 - **Events:** the **Events** layer button switches the map to event editing. Click an event to select it, drag it to move it, double-click it to open the **event editor**, or double-click an empty cell to create one (named and numbered like RPG Maker does). Right-click for New, Edit, Copy, Paste and Delete; Delete, Ctrl+C and Ctrl+V work too.
-- **Event editor:** name, pages as tabs (New page, Copy page, Delete page), every page setting (conditions, graphic, movement, trigger, layer, …) with readable choices such as “Action Button” or “Stay Still”, and the page's command list as RPG Maker shows it (“◆Show Message: …”). Commands can be inserted, edited and deleted; every command is editable as raw data (code, indent, text, parameters) with a searchable list of all commands, so nothing is out of reach. Every change can be undone with Ctrl+Z in the map.
+- **Event editor:** name, pages as tabs (New page, Copy page, Delete page), every page setting (conditions, graphic, movement, trigger, layer, …) with readable choices such as “Action Button” or “Stay Still”, and the page's command list as RPG Maker shows it (“◆Control Switches: [0003: Chest opened] ON”). Every change can be undone with Ctrl+Z in the map.
+- **Event commands:** **Insert…** opens a searchable list of commands by group; the common ones (Show Message, Control Switches and Variables, Conditional Branch, Teleport, Change Money/Items/Party/HP, Call Event, Wait, sounds, labels, loops, …) have dialogs with named choices (switches, items, maps and events by name). These dialogs are generated from a short description of each command, the same way plugins add their own ([below](#adding-event-commands-from-a-plugin)). Editing follows the list's structure like RPG Maker: a branch comes with its bodies and Else, a message's lines stay together, Delete, Copy, Cut and Paste (also from the right-click menu) work on whole blocks. Every other command can be inserted and edited as raw data (code, indent, text, parameters), so nothing is out of reach.
 - **Saving maps** works like the database: **Save map** makes a backup, writes a temporary file, reads it back and compares it before replacing `Map####.lmu`; **Revert** drops unsaved changes, and Godot asks about unsaved maps when it closes.
 - The **Database** tab shows every section of the database (actors, classes, skills, items, enemies, troops, states, vocabulary, system, common events, switches, variables, …). Every field of the selected entry is listed, nested structures can be expanded, event commands appear by name with their indentation, and references such as `class_id` or `switch_id` show the name they point to. Fields come straight from liblcf's own description of the format, so new fields (including Maniacs and EasyRPG extensions) appear automatically.
 - **Editing the database:** double-click a field to change it (checkbox for yes/no, number box, text field, list of named choices). **Save** writes `RPG_RT.ldb`; **Revert** drops unsaved changes, and Godot warns about unsaved changes when it closes. **Common events** get the same command list as map events.
@@ -56,7 +57,7 @@ if project.load("C:/Games/MyRpg") == OK:
             print(LcfProject.get_event_command_name(command.code), " ", command.string)
 ```
 
-![The Map tab on the Events layer with the chest in the demo's house selected, and the event editor open on it: name “Chest”, tabs for page 1 and 2, the page settings (Stay Still, Action Button, Same as Hero, …) and the command list with Play Sound, Show Message, Change Gold and Control Switches.](docs/images/editor-events.png)
+![The Map tab on the Events layer with the chest in the demo's house selected, and the event editor open on it: name “Chest”, tabs for page 1 and 2, the page settings (Stay Still, Action Button, Same as Hero, …) and the command list (Play Sound Effect, Show Message, Change Money, Control Switches). The generated dialog of the selected Control Switches command is open: Target “One switch”, Switch “0003: Chest opened”, Set to “ON”, with Apply and Raw… buttons.](docs/images/editor-events.png)
 
 ![The Database tab with the demo's actor "Hero" selected: its fields on the right, the title just changed to "Knight of the Lake", "Unsaved changes" with Save and Revert buttons at the top, references such as class_id shown as "1 · Warrior", and the number editor open for final_level.](docs/images/editor-database.png)
 
@@ -64,7 +65,32 @@ The autotile and water rules (`extension/src/tile_rules.h`) are our own implemen
 
 Untouched maps also save back byte for byte: all maps of TestGame-2003, -Maniacs and -EasyRPG and 77 of 78 maps of TestGame-2000 (the remaining one, and any other map where that is not the case, makes the editor ask before saving). Events go through the same exact path: every event of every TestGame (3,355 events with 54,139 commands in TestGame-2000 alone) and every common event passes through the editor without changing a byte.
 
-**Not yet:** dialogs for individual event commands (they are edited as raw data for now), event graphics on the map, move route editing, adding or removing database entries, map properties (size, chipset), RTP graphics (chipsets must be inside the project), tile animation.
+**Not yet:** dialogs for the less common event commands (Show Choices, pictures, move routes and others are edited as raw data), event graphics on the map, adding or removing database entries, map properties (size, chipset), RTP graphics (chipsets must be inside the project), tile animation.
+
+## Adding event commands from a plugin
+
+Event command dialogs are generated from data. A Godot editor plugin can give any command code a dialog, or replace a built-in one, by registering a schema with `LcfCommands` (see [`command_registry.gd`](addons/lcf_editor/command_registry.gd) for every key):
+
+```gdscript
+@tool
+extends EditorPlugin
+
+func _enter_tree() -> void:
+    LcfCommands.register({
+        "code": 11050, "name": "Shake Screen", "group": "Screen",
+        "params": [
+            { "index": 0, "label": "Strength", "type": "int", "min": 1, "max": 9, "default": 3 },
+            { "index": 1, "label": "Speed", "type": "int", "min": 1, "max": 9, "default": 3 },
+            { "index": 2, "label": "Duration (tenths of a second)", "type": "int", "default": 10 },
+            { "index": 3, "label": "Wait until done", "type": "bool" },
+        ],
+    })
+
+func _exit_tree() -> void:
+    LcfCommands.unregister(11050)
+```
+
+The command then appears under **Insert…**, gets its dialog and a readable line in the list. Parameter types include numbers, yes/no, choices, database references (`switch`, `variable`, `item`, `actor`, …), `map` and `event`; fields can depend on others (`"when": { 0: 1 }`), and a command can open a block (`"block": { "end": … }`). The built-in commands are described the same way, in [`builtin_commands.gd`](addons/lcf_editor/builtin_commands.gd).
 
 ## Repository layout
 
@@ -83,7 +109,7 @@ docs/                      Vision document and README images
 
 ## Download
 
-Every push is built and tested on **Windows** and **Linux** by [GitHub Actions](https://github.com/depuschm/godot-lcf-editor/actions/workflows/build.yml): the smoke test, the round-trip test on the demo and on EasyRPG's TestGame (2000, 2003, Maniacs), the event editor test, and a check that the Godot editor loads the plugin.
+Every push is built and tested on **Windows** and **Linux** by [GitHub Actions](https://github.com/depuschm/godot-lcf-editor/actions/workflows/build.yml): the smoke test, the round-trip test on the demo and on EasyRPG's TestGame (2000, 2003, Maniacs), the event command and event editor tests, and a check that the Godot editor loads the plugin.
 
 - **Releases:** ready-to-use addon zips with Windows and Linux binaries appear under [Releases](https://github.com/depuschm/godot-lcf-editor/releases) once a version is tagged.
 - **Latest build:** open the newest successful run on the [Actions page](https://github.com/depuschm/godot-lcf-editor/actions/workflows/build.yml) and download `lcf_editor-Windows` or `lcf_editor-Linux` (needs a GitHub login).
@@ -130,9 +156,17 @@ godot --headless --path . --script res://tests/test_roundtrip.gd -- /path/to/RPG
 
 Without a path it uses `demo/`.
 
+### Event command tests
+
+Checks the command descriptions (schemas), registering a plugin command, and the block rules (inserting, deleting, copying, Else). With a project, every command of every event is described and its structure checked (77,000 lines across EasyRPG's TestGames):
+
+```bash
+godot --headless --path . --script res://tests/test_commands.gd -- /path/to/RPG/project
+```
+
 ### Event editor test
 
-Drives the real map view, event editor and database view without a window, on a copy of `demo/`: creating, renaming, moving, copying and deleting events, page settings, pages and commands, the undo states, and common event commands.
+Drives the real map view, event editor and database view without a window, on a copy of `demo/`: creating, renaming, moving, copying and deleting events, page settings, pages, the command picker and generated dialogs, branches with and without Else, copy and paste of blocks, the undo states, and common event commands.
 
 ```bash
 godot --headless --path . --script res://tests/test_event_editor.gd
@@ -165,7 +199,7 @@ cmake -S tools -B build-tools && cmake --build build-tools
 | M3a | Database browser ✅ |
 | M3b | Database editing and safe saving (backups, byte-identical round trip) ✅ |
 | M4a | Event editor: events on the map, pages, page settings, command lists (raw editing), undo ✅ |
-| M4b | Data-driven dialogs for event commands, registered by plugins |
+| M4b | Data-driven dialogs for event commands, registered by plugins; block-aware editing ✅ |
 | M5 | Plugin API for the editor |
 | M6 | Test Play with EasyRPG Player; runtime extension mechanism |
 | M7 | Showcase plugins: pixel-perfect movement, shader support |

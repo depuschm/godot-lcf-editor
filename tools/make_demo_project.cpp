@@ -345,7 +345,7 @@ int main(int argc, char **argv) {
 			add_event(map, "Door B", 15, 5, { { cmd(Code::ShowMessage, 0, "The door is locked.") } });
 			add_event(map, "Villager", 9, 10, { {
 				cmd(Code::ShowMessage, 0, "Nice weather today."),
-				cmd(Code::CallCommonEvent, 0, "", { 0, 1, 0 }),
+				cmd(Code::CallEvent, 0, "", { 0, 1, 0 }),  // common event 1
 			} });
 		} else {
 			auto &chest = add_event(map, "Chest", 13, 3, {

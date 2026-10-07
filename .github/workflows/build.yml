@@ -78,6 +78,11 @@ jobs:
           "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_roundtrip.gd | tee roundtrip.log
           echo "::notice title=Round trip demo (${{ matrix.name }})::$(grep -c '  ok ' roundtrip.log) checks ok, result: $(tail -n 1 roundtrip.log)"
 
+      - name: Event command tests (demo)
+        run: |
+          "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_commands.gd | tee commands.log
+          echo "::notice title=Event commands (${{ matrix.name }})::$(grep -c '  ok ' commands.log) checks ok, result: $(tail -n 1 commands.log)"
+
       - name: Event editor test
         run: |
           "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_event_editor.gd | tee events.log
@@ -91,8 +96,10 @@ jobs:
             # pwd -W gives a Windows path under Git Bash; plain pwd elsewhere.
             dir="$(cd ../TestGame/TestGame-$game && (pwd -W 2>/dev/null || pwd))"
             "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_roundtrip.gd -- "$dir" | tee game.log
+            "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_commands.gd -- "$dir" | tee game-commands.log
             echo "::endgroup::"
             echo "::notice title=Round trip TestGame-$game (${{ matrix.name }})::$(grep -c '  ok ' game.log) checks ok, $(grep -c 'note ' game.log) notes, result: $(tail -n 1 game.log)"
+            echo "::notice title=Event commands TestGame-$game (${{ matrix.name }})::$(grep 'command lines written' game-commands.log | sed 's/^ *ok *//'), result: $(tail -n 1 game-commands.log)"
           done
 
       - name: Editor loads the plugin

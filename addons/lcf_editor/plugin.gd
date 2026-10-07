@@ -33,6 +33,7 @@ func _enter_tree() -> void:
 
 
 func _exit_tree() -> void:
+	LcfCommands.clear()
 	if dock:
 		remove_control_from_docks(dock)
 		dock.queue_free()

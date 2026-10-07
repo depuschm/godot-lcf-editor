@@ -85,7 +85,9 @@ func _run() -> void:
 	]
 	editor.commands.commands_changed.emit(lines, "Insert event command")
 	_check(project.get_map_event_commands(map_id, id, 0).size() == 2, "commands from the list reach the project")
-	_check(editor.commands.list.item_count == 3 and editor.commands.list.get_item_text(0) == "◆Show Message: “Welcome to the demo!”", "command list shows “%s”" % editor.commands.list.get_item_text(0))
+	_check(editor.commands.list.item_count == 3 and editor.commands.list.get_item_text(0) == "◆Show Message: Welcome to the demo!", "command list shows “%s”" % editor.commands.list.get_item_text(0))
+	await _test_dialogs(project, editor, map_id, id)
+	editor.commands.commands_changed.emit(lines, "Reset")
 	editor._insert_page(0)
 	_check(editor.tabs.tab_count == 2 and editor.page == 1, "page copied into a second tab (%d tabs, page %d)" % [editor.tabs.tab_count, editor.page])
 	_check(project.get_map_event_commands(map_id, id, 1).size() == 2, "copied page has the commands")
@@ -140,6 +142,114 @@ func _run() -> void:
 	await process_frame
 	print("FAILED" if _failures > 0 else "OK")
 	quit(1 if _failures > 0 else 0)
+
+
+# Generated command dialogs, the picker and block-aware editing.
+func _test_dialogs(project: RefCounted, editor: AcceptDialog, map_id: int, id: int) -> void:
+	var cl: Control = editor.commands
+	var count := func() -> int: return project.get_map_event_commands(map_id, id, 0).size()
+
+	# Insert Control Switches through the picker at the end of the list.
+	_select(cl, cl.commands.size())
+	cl.open_insert()
+	_check(cl.picker.visible and _tree_item(cl._picker_tree.get_root(), "Control Switches") != null, "picker lists commands by group")
+	cl._picker_filter.text = "switch"
+	cl._fill_picker()
+	var picked := _tree_item(cl._picker_tree.get_root(), "Control Switches")
+	_check(picked != null and picked.is_selected(0), "searching selects the first match")
+	cl.picker.hide()
+	cl._on_picked()
+	var dialog: ConfirmationDialog = cl.dialog
+	_check(dialog.visible and dialog.title == "Insert Control Switches", "picking opens the generated dialog")
+	_check(_labels(dialog) == ["Target", "Switch", "Set to"], "dialog fields: %s" % [_labels(dialog)])
+	dialog._set_param(0, 1)
+	await process_frame
+	_check(_labels(dialog) == ["Target", "First switch", "Last switch", "Set to"], "choosing a range shows first and last switch")
+	dialog._set_param(2, 2)
+	dialog._set_param(3, 1)
+	dialog.hide()
+	dialog._on_confirmed()
+	var after: Array = project.get_map_event_commands(map_id, id, 0)
+	_check(after.back().code == 10210 and after.back().parameters == PackedInt32Array([1, 1, 2, 1]), "Control Switches inserted: %s" % [after.back().parameters])
+	_check(cl.list.get_item_text(after.size() - 1) == "◆Control Switches: [0001..0002] OFF", "its line reads “%s”" % cl.list.get_item_text(after.size() - 1))
+
+	# Editing without changes changes nothing.
+	_select(cl, after.size() - 1)
+	cl.open_edit()
+	dialog.hide()
+	dialog._on_confirmed()
+	_check(project.get_map_event_commands(map_id, id, 0) == after, "confirming an unchanged dialog changes nothing")
+
+	# A conditional branch with Else, then without.
+	_select(cl, cl.commands.size())
+	cl.open_insert()
+	cl.picker.hide()
+	_tree_item(cl._picker_tree.get_root(), "Conditional Branch").select(0)
+	cl._on_picked()
+	dialog._set_param(5, 1)
+	dialog.hide()
+	dialog._on_confirmed()
+	var codes: Array = project.get_map_event_commands(map_id, id, 0).map(func(c): return c.code)
+	_check(codes.slice(-5) == [12010, 10, 22010, 10, 22011], "branch inserted with its bodies and Else")
+	var head: int = codes.size() - 5
+	_select(cl, head + 2)  # the Else line
+	cl.open_edit()
+	_check(dialog.schema.code == 12010, "editing the Else line opens its branch")
+	dialog._set_param(5, 0)
+	dialog.hide()
+	dialog._on_confirmed()
+	codes = project.get_map_event_commands(map_id, id, 0).map(func(c): return c.code)
+	_check(codes.slice(head) == [12010, 10, 22011], "clearing Else removes the Else part")
+
+	# Copy and paste the branch, then delete the copy by its End line.
+	_select(cl, head)
+	cl.copy_selected()
+	_select(cl, cl.commands.size())
+	cl.paste()
+	codes = project.get_map_event_commands(map_id, id, 0).map(func(c): return c.code)
+	_check(codes.slice(head) == [12010, 10, 22011, 12010, 10, 22011], "pasted a copy of the branch")
+	_select(cl, head + 5)
+	cl.delete_selected()
+	codes = project.get_map_event_commands(map_id, id, 0).map(func(c): return c.code)
+	_check(codes.slice(head) == [12010, 10, 22011], "deleting at End removes the whole copy")
+
+	# Insert inside the branch body (at its END line) and the message lines.
+	_select(cl, head + 1)
+	cl.open_insert()
+	cl.picker.hide()
+	_tree_item(cl._picker_tree.get_root(), "Show Message").select(0)
+	cl._on_picked()
+	dialog.text = "Inside the branch\nSecond line"
+	dialog.hide()
+	dialog._on_confirmed()
+	var final: Array = project.get_map_event_commands(map_id, id, 0)
+	_check(final.slice(head).map(func(c): return "%d@%d" % [c.code, c.indent]) == ["12010@0", "10110@1", "20110@1", "10@1", "22011@0"], "message inserted into the branch body, one command per line")
+	_check(count.call() == final.size(), "the list and the project agree")
+
+
+func _select(cl: Control, row: int) -> void:
+	cl.list.deselect_all()
+	cl.list.select(row)
+
+
+func _labels(dialog: ConfirmationDialog) -> Array:
+	var out := []
+	var cells: Array = dialog._grid.get_children()
+	for i in range(0, cells.size(), 2):
+		if not cells[i].is_queued_for_deletion():
+			out.append(cells[i].text)
+	return out
+
+
+func _tree_item(item: TreeItem, text: String) -> TreeItem:
+	while item:
+		if item.get_text(0) == text:
+			return item
+		var found := _tree_item(item.get_first_child(), text)
+		if found:
+			return found
+		item = item.get_next()
+	return null
 
 
 func _free_cell(view: Control) -> Vector2i:
