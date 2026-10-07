@@ -92,6 +92,7 @@ func shutdown() -> void:
 	for panel: Dictionary in _event_panels.duplicate():
 		remove_event_panel(panel.title)
 	set_map_material(null)
+	set_map_screen_material(null)
 
 
 # --- project and maps ------------------------------------------------------------
@@ -209,6 +210,16 @@ func _refresh_event_panels() -> void:
 func set_map_material(material: Material) -> void:
 	if _map_view:
 		_map_view.set_map_material(material)
+
+
+## Sets a material drawn over the whole map (both tile layers), e.g. to preview a
+## screen shader; null removes it. The shader reads the map through a
+## `hint_screen_texture` sampler at `(lcf_origin + uv * lcf_size) / lcf_viewport`;
+## the map view sets those uniforms and `resolution` (map size in pixels) and
+## `time` every frame. The lcf_shaders plugin shows how.
+func set_map_screen_material(material: Material) -> void:
+	if _map_view:
+		_map_view.set_map_screen_material(material)
 
 
 ## Adds a tab to the LCF Editor screen (next to Map and Database). The control is

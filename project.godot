@@ -11,4 +11,4 @@ config/features=PackedStringArray("4.5")
 
 [editor_plugins]
 
-enabled=PackedStringArray("res://addons/lcf_editor/plugin.cfg", "res://addons/lcf_map_notes/plugin.cfg", "res://addons/lcf_pixel_movement/plugin.cfg")
+enabled=PackedStringArray("res://addons/lcf_editor/plugin.cfg", "res://addons/lcf_map_notes/plugin.cfg", "res://addons/lcf_pixel_movement/plugin.cfg", "res://addons/lcf_shaders/plugin.cfg")

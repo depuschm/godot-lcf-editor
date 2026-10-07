@@ -112,11 +112,17 @@ jobs:
           if grep -q "SCRIPT ERROR" pixel.log; then echo "::error::Script errors in pixel.log"; exit 1; fi
           echo "::notice title=Pixel movement plugin (${{ matrix.name }})::$(grep -c '  ok ' pixel.log) checks ok, result: $(tail -n 1 pixel.log)"
 
+      - name: Screen shader plugin test
+        run: |
+          "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_screen_shaders.gd | tee shaders.log
+          if grep -q "SCRIPT ERROR" shaders.log; then echo "::error::Script errors in shaders.log"; exit 1; fi
+          echo "::notice title=Screen shader plugin (${{ matrix.name }})::$(grep -c '  ok ' shaders.log) checks ok, result: $(tail -n 1 shaders.log)"
+
       - name: Install EasyRPG Player libraries (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get install -y libsdl2-dev libpixman-1-dev libpng-dev libfmt-dev libfreetype-dev \
-            libharfbuzz-dev nlohmann-json3-dev libinih-dev libexpat1-dev xvfb
+            libharfbuzz-dev nlohmann-json3-dev libinih-dev libexpat1-dev xvfb libgl1-mesa-dri
 
       - name: Cache patched EasyRPG Player (Linux)
         if: runner.os == 'Linux'
@@ -137,6 +143,22 @@ jobs:
           xvfb-run -a "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_pixel_runtime.gd -- "$PATCHED_PLAYER" | tee runtime.log
           if grep -q "SCRIPT ERROR" runtime.log; then echo "::error::Script errors in runtime.log"; exit 1; fi
           echo "::notice title=Pixel movement in EasyRPG Player (${{ matrix.name }})::$(grep -c '  ok ' runtime.log) checks ok, result: $(tail -n 1 runtime.log)"
+
+      - name: Screen shader preview test (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          # Not headless: renders the editor's shader preview with OpenGL (Mesa) under Xvfb.
+          xvfb-run -a "../godot/${{ matrix.godot }}" --path . --rendering-driver opengl3 --script res://tests/test_screen_shaders.gd 2>&1 | tee preview.log
+          if grep -q "SCRIPT ERROR" preview.log; then echo "::error::Script errors in preview.log"; exit 1; fi
+          grep -q "the sepia preview tints the map" preview.log
+          echo "::notice title=Screen shader preview (${{ matrix.name }})::$(grep -c '  ok ' preview.log) checks ok, result: $(tail -n 1 preview.log)"
+
+      - name: Screen shader runtime test (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          xvfb-run -a "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_shader_runtime.gd -- "$PATCHED_PLAYER" | tee shader-runtime.log
+          if grep -q "SCRIPT ERROR" shader-runtime.log; then echo "::error::Script errors in shader-runtime.log"; exit 1; fi
+          echo "::notice title=Screen shaders in EasyRPG Player (${{ matrix.name }})::$(grep -c '  ok ' shader-runtime.log) checks ok, result: $(tail -n 1 shader-runtime.log)"
 
       - name: Round-trip test (EasyRPG TestGame)
         run: |
@@ -164,11 +186,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: lcf_editor-${{ runner.os }}
-          # All plugin folders: lcf_editor/, lcf_map_notes/ and lcf_pixel_movement/.
+          # All plugin folders: lcf_editor/, lcf_map_notes/, lcf_pixel_movement/ and lcf_shaders/
+          # (with lcf_shaders/examples/.gdignore, so Godot does not import the .glsl files).
+          include-hidden-files: true
           path: |
             addons/lcf_editor
             addons/lcf_map_notes
             addons/lcf_pixel_movement
+            addons/lcf_shaders
 
   release:
     # Runs for version tags (v0.1.0, ...) and for releases published on GitHub:
@@ -190,6 +215,7 @@ jobs:
           cp -r artifacts/lcf_editor-Linux/lcf_editor addons/lcf_editor
           cp -r artifacts/lcf_editor-Linux/lcf_map_notes addons/lcf_map_notes
           cp -r artifacts/lcf_editor-Linux/lcf_pixel_movement addons/lcf_pixel_movement
+          cp -r artifacts/lcf_editor-Linux/lcf_shaders addons/lcf_shaders
           cp artifacts/lcf_editor-Windows/lcf_editor/bin/* addons/lcf_editor/bin/
           ls -l addons/lcf_editor/bin addons/lcf_map_notes
           zip -r "lcf_editor-${GITHUB_REF_NAME}.zip" addons

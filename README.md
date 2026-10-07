@@ -4,7 +4,7 @@
 
 Godot editor for RPG Maker 2000/2003 projects (LCF format), built on [liblcf](https://github.com/EasyRPG/liblcf). Extensible through plugins, playtested with [EasyRPG Player](https://github.com/EasyRPG/Player).
 
-> **Status: early prototype.** The editor plugin opens an existing RPG Maker 2000/2003 project, lets you paint its maps, edit its events and their commands, and browse and edit its whole database inside Godot. **Test Play** runs it in EasyRPG Player, and other Godot plugins can extend both the editor and, through comment commands, the game ([writing plugins](#writing-plugins)). The first showcase plugin, [pixel-perfect movement](#showcase-pixel-movement), works end to end: editor half in Godot, runtime half as a patch for EasyRPG Player. Shader support comes next — see the [roadmap](#roadmap). Keep backups of your projects while trying it.
+> **Status: early prototype.** The editor plugin opens an existing RPG Maker 2000/2003 project, lets you paint its maps, edit its events and their commands, and browse and edit its whole database inside Godot. **Test Play** runs it in EasyRPG Player, and other Godot plugins can extend both the editor and, through comment commands, the game ([writing plugins](#writing-plugins)). Two showcase plugins work end to end, each with an editor half in Godot and a runtime half as a patch for EasyRPG Player: [pixel-perfect movement](#showcase-pixel-movement) and [screen shaders](#showcase-screen-shaders). Keep backups of your projects while trying it.
 
 ## Vision
 
@@ -116,7 +116,7 @@ func _lcf_editor_closing(api: LcfEditorAPI) -> void:
 | Map tools | `add_map_tool(tool)` with a subclass of `LcfMapTool`: override `_map_input(event, cell)`, `_draw_map(canvas, active)`, `_activated()`, `_deactivated()`; helpers `redraw()`, `is_on_map(cell)`, `cell_rect(cell)`, `get_zoom()` |
 | Event editor panels | `add_event_panel(title, factory)`, `remove_event_panel(title)`: the factory gets `{ project, map_id, event_id, page, editor }` for each page shown and returns a Control |
 | Tabs | `add_tab(control, title)`, `show_tab(control)`, `remove_tab(control)` |
-| Map preview | `set_map_material(material)`: a material (e.g. a shader) on the map's tile layers; `redraw_map()` |
+| Map preview | `set_map_material(material)`: a material (e.g. a shader) on the map's tile layers; `set_map_screen_material(material)`: a material drawn over the whole map that reads it through `hint_screen_texture` (a screen shader preview, see [`lcf_shaders`](addons/lcf_shaders)); `redraw_map()` |
 | Plugin data | `get_plugin_data(id, default)`, `set_plugin_data(id, data)`: JSON in `lcf-plugins/<id>.json` inside the RPG Maker project, so it travels with the game for the runtime half of a plugin (RPG Maker and EasyRPG Player ignore the folder) |
 | Event commands | `LcfCommands.register(schema)`, see below; commands for the game as comments, see [runtime half](#runtime-half-comment-commands) |
 | Test Play | `start_test_play(map_id, x, y)`: saves and runs the game (from a cell with a map ID) |
@@ -180,6 +180,33 @@ The first feature built the way the vision describes — an editor half and a ru
 
 Tests play scripted input in the patched Player and check the hero's position to the pixel against tile movement (map edges and water 2 px further thanks to the hitbox margin, diagonals, short taps, event hitboxes, touch triggers); CI builds the Player and runs them. The patch is a prototype to discuss with the EasyRPG team — the vision's aim is a plugin interface in the Player itself rather than a fork; see the [runtime README](runtime/easyrpg-player/README.md) for what it covers and its limits.
 
+## Showcase: screen shaders
+
+The second showcase gives maps a **screen shader**: a GLSL post-process pass over the finished frame — night, sepia, an old CRT, heat haze, or anything you write. You pick a shader per map (or a default for all maps) in the editor and see it live on the map; the game draws it on the GPU.
+
+![The editor with the Screen Shaders plugin: the town map previewed with the night shader, and the Screen Shader dock on the right with the map's shader (night), its parameters Strength 0.75 and Tint (a blue colour), Preview on the map, the default for other maps and the example shaders.](docs/images/editor-shaders.png)
+
+- **Shader files** are plain GLSL in the game's `Shader` folder, written so the same file runs in EasyRPG Player (GLSL 1.20) and, wrapped by the plugin, in Godot. A shader defines `vec4 effect(vec2 uv)`, reads the screen with `pixel(uv)` and can use `resolution` and `time`; its parameters are uniforms with a default and a range in a comment:
+
+  ```glsl
+  // Night: darker, bluer and a little desaturated.
+  uniform float strength; // 0.7 [0, 1]
+  uniform vec3 tint; // color 0.45, 0.55, 1.0
+
+  vec4 effect(vec2 uv) {
+  	vec3 c = pixel(uv).rgb;
+  	float gray = dot(c, vec3(0.299, 0.587, 0.114));
+  	vec3 night = mix(c, vec3(gray), 0.5) * tint * 0.6;
+  	return vec4(mix(c, night, strength), 1.0);
+  }
+  ```
+- **Editor half** — [`addons/lcf_shaders`](addons/lcf_shaders): a **Screen Shader** dock with the open map's shader and its parameters (sliders and colour pickers generated from the uniforms), the default for maps without their own, and four [example shaders](addons/lcf_shaders/examples) to add to the game (night, sepia, crt, heat_haze). The choices are stored as plugin data (`lcf-plugins/shaders.json`) with undo, and the map view shows the shader live through `set_map_screen_material()`. The comment commands **Set Screen Shader** (`@shader "night"`) and **Set Shader Parameter** (`@shader_param "strength", V12, 100`) change them during the game.
+- **Runtime half** — [`runtime/easyrpg-player`](runtime/easyrpg-player), a second patch for EasyRPG Player (about 700 lines). The Player keeps drawing everything on the CPU as before; only the last step, copying the finished frame to the window, goes through the shader on the OpenGL context of SDL's renderer. No new libraries are needed, and games without `shaders.json` run exactly as before.
+
+<p align="center"><img src="docs/images/game-shaders.png" alt="The demo's town in the patched EasyRPG Player four times: without a shader, with night (dark and blue), with crt (curved screen, scanlines, dark corners) and with sepia." width="640"></p>
+
+Tests run the patched Player under Xvfb with Mesa and check the colours of the shaded frames: the map's shader, the default, parameters from the settings, `"none"`, both comment commands, and a shader with errors (reported, and the game runs without it). The editor test also renders the preview and checks its colours.
+
 ## Repository layout
 
 ```
@@ -187,6 +214,7 @@ project.godot              Open this folder in Godot 4.5+
 addons/lcf_editor/         Editor plugin (GDScript) + the GDExtension's binaries
 addons/lcf_map_notes/      Example plugin for the plugin API (map tool, event panel, tab, data, command)
 addons/lcf_pixel_movement/ Showcase plugin: pixel movement, editor half (hitboxes, settings, commands)
+addons/lcf_shaders/        Showcase plugin: screen shaders, editor half (per-map shaders, live preview, examples)
 runtime/easyrpg-player/    Runtime half of the showcases: patches for EasyRPG Player (GPLv3) and a build script
 extension/                 C++ GDExtension wrapping liblcf (CMake)
 thirdparty/liblcf/         git submodule – RPG Maker 2000/2003 file formats
@@ -200,12 +228,12 @@ docs/                      Vision document and README images
 
 ## Download
 
-Every push is built and tested on **Windows** and **Linux** by [GitHub Actions](https://github.com/depuschm/godot-lcf-editor/actions/workflows/build.yml): the smoke test, the round-trip test on the demo and on EasyRPG's TestGame (2000, 2003, Maniacs), the event command, plugin API, Test Play and event editor tests, and a check that the Godot editor loads both plugins without script errors.
+Every push is built and tested on **Windows** and **Linux** by [GitHub Actions](https://github.com/depuschm/godot-lcf-editor/actions/workflows/build.yml): the smoke test, the round-trip test on the demo and on EasyRPG's TestGame (2000, 2003, Maniacs), the event command, plugin API, Test Play and event editor tests, the tests of both showcase plugins (on Linux also in the patched EasyRPG Player), and a check that the Godot editor loads all plugins without script errors.
 
 - **Releases:** ready-to-use addon zips with Windows and Linux binaries appear under [Releases](https://github.com/depuschm/godot-lcf-editor/releases) once a version is tagged.
 - **Latest build:** open the newest successful run on the [Actions page](https://github.com/depuschm/godot-lcf-editor/actions/workflows/build.yml) and download `lcf_editor-Windows` or `lcf_editor-Linux` (needs a GitHub login).
 
-To use a download, put the `lcf_editor` folder into your Godot project's `addons/` folder (or clone this repository and copy it into `addons/lcf_editor`), then enable **LCF Editor** under *Project → Project Settings → Plugins*. The zip also contains the example plugin `lcf_map_notes`; copy it too if you want it. macOS builds are not provided yet.
+To use a download, put the `lcf_editor` folder into your Godot project's `addons/` folder (or clone this repository and copy it into `addons/lcf_editor`), then enable **LCF Editor** under *Project → Project Settings → Plugins*. The zip also contains the example plugin `lcf_map_notes` and the showcase plugins `lcf_pixel_movement` and `lcf_shaders`; copy them too if you want them (the showcases need the [patched EasyRPG Player](runtime/easyrpg-player) in the game). macOS builds are not provided yet.
 
 ## Building
 
@@ -280,6 +308,16 @@ godot --headless --path . --script res://tests/test_pixel_movement.gd
 xvfb-run godot --headless --path . --script res://tests/test_pixel_runtime.gd -- /path/to/patched/easyrpg-player
 ```
 
+### Screen shader tests
+
+`test_screen_shaders.gd` checks the plugin's editor half (shader parameters, the Godot wrapper, the settings file, the dock, the preview, the commands); run without `--headless` under a display it also renders the preview. `test_shader_runtime.gd` needs the patched EasyRPG Player and a display with OpenGL:
+
+```bash
+godot --headless --path . --script res://tests/test_screen_shaders.gd
+xvfb-run godot --path . --rendering-driver opengl3 --script res://tests/test_screen_shaders.gd
+xvfb-run godot --headless --path . --script res://tests/test_shader_runtime.gd -- /path/to/patched/easyrpg-player
+```
+
 ### Event editor test
 
 Drives the real map view, event editor and database view without a window, on a copy of `demo/`: creating, renaming, moving, copying and deleting events, page settings, pages, the command picker and generated dialogs, branches with and without Else, copy and paste of blocks, the undo states, and common event commands.
@@ -320,7 +358,8 @@ cmake -S tools -B build-tools && cmake --build build-tools
 | M5 | Plugin API for the editor: map tools, event editor panels, tabs, map material, plugin data, signals; example plugin ✅ |
 | M6 | Test Play with EasyRPG Player; runtime extension mechanism (comment commands, plugin data) ✅ |
 | M7a | Showcase: pixel-perfect movement — editor plugin and EasyRPG Player patch (prototype) ✅ |
-| M7b | Showcase: shader support |
+| M7b | Showcase: screen shaders — editor plugin with live preview and EasyRPG Player patch (prototype) ✅ |
+| M8 | Proposal to the EasyRPG team: a plugin interface in the Player instead of patches |
 
 ## Contributing
 

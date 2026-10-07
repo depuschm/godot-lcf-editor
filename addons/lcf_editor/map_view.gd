@@ -57,6 +57,7 @@ var canvas: Node2D
 var lower_layer: TileMapLayer
 var upper_layer: TileMapLayer
 var overlay: Node2D
+var screen_rect: ColorRect  # the screen material (a shader over the whole map), or null
 var message: Label
 var palette: Control
 var palette_scroll: ScrollContainer
@@ -98,6 +99,7 @@ var tools_bar: HBoxContainer
 
 
 func _ready() -> void:
+	set_process(screen_rect != null)  # only to update a screen material's uniforms
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
 
 	var bar := HBoxContainer.new()
@@ -588,6 +590,49 @@ func remove_tool(map_tool: RefCounted) -> void:
 func set_map_material(material: Material) -> void:
 	lower_layer.material = material
 	upper_layer.material = material
+
+
+## A material drawn over the whole map (both tile layers), e.g. to preview a screen
+## shader; null removes it. Its shader reads the map through a `hint_screen_texture`
+## sampler; the view sets these uniforms every frame:
+##   lcf_origin, lcf_size: where the map is on the screen, in viewport pixels,
+##   lcf_viewport: the viewport's size in pixels,
+##   resolution: the map's size in pixels, time: seconds.
+func set_map_screen_material(material: Material) -> void:
+	if material == null:
+		if screen_rect:
+			screen_rect.queue_free()
+			screen_rect = null
+		set_process(false)
+		return
+	if screen_rect == null:
+		screen_rect = ColorRect.new()
+		screen_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		canvas.add_child(screen_rect)
+		canvas.move_child(screen_rect, upper_layer.get_index() + 1)
+	screen_rect.material = material
+	_update_screen_rect()
+	set_process(true)
+
+
+func _process(_delta: float) -> void:
+	_update_screen_rect()
+
+
+func _update_screen_rect() -> void:
+	if screen_rect == null or not screen_rect.is_inside_tree():
+		return
+	var size := Vector2(map.get("width", 20), map.get("height", 15)) * TILE
+	screen_rect.size = size
+	var shader_material := screen_rect.material as ShaderMaterial
+	if shader_material == null:
+		return
+	var xform := screen_rect.get_global_transform_with_canvas()
+	shader_material.set_shader_parameter("lcf_origin", xform.origin)
+	shader_material.set_shader_parameter("lcf_size", xform.basis_xform(size))
+	shader_material.set_shader_parameter("lcf_viewport", screen_rect.get_viewport().get_visible_rect().size)
+	shader_material.set_shader_parameter("resolution", size)
+	shader_material.set_shader_parameter("time", Time.get_ticks_msec() / 1000.0)
 
 
 func _activate_tool(map_tool: RefCounted) -> void:

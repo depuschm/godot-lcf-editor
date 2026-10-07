@@ -1,0 +1,890 @@
+From 5066bb1a5155add7864fc9bfd1222c2be2f57bcf Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 7 Oct 2026 20:15:29 +0200
+Subject: [PATCH] Screen shaders prototype: GLSL post-process pass per map,
+ @shader and @shader_param
+
+---
+ CMakeLists.txt                   |   4 +
+ src/game_dynrpg.cpp              |   2 +
+ src/game_interpreter.cpp         |   5 +-
+ src/game_player.cpp              |   2 +
+ src/platform/sdl/sdl2_shader.cpp | 254 ++++++++++++++++++++++++++
+ src/platform/sdl/sdl2_shader.h   |  49 +++++
+ src/platform/sdl/sdl2_ui.cpp     |  12 +-
+ src/platform/sdl/sdl2_ui.h       |   5 +
+ src/screen_shader.cpp            | 304 +++++++++++++++++++++++++++++++
+ src/screen_shader.h              |  95 ++++++++++
+ 10 files changed, 729 insertions(+), 3 deletions(-)
+ create mode 100644 src/platform/sdl/sdl2_shader.cpp
+ create mode 100644 src/platform/sdl/sdl2_shader.h
+ create mode 100644 src/screen_shader.cpp
+ create mode 100644 src/screen_shader.h
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 6f62ac1..cc3af88 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -307,6 +307,8 @@ add_library(${PROJECT_NAME} OBJECT
+ 	src/scene_battle_rpg2k3.h
+ 	src/scene_battle_rpg2k.cpp
+ 	src/scene_battle_rpg2k.h
++	src/screen_shader.cpp
++	src/screen_shader.h
+ 	src/scene.cpp
+ 	src/scene_debug.cpp
+ 	src/scene_debug.h
+@@ -593,6 +595,8 @@ if(PLAYER_TARGET_PLATFORM STREQUAL "SDL3")
+ 	endif()
+ elseif(PLAYER_TARGET_PLATFORM STREQUAL "SDL2")
+ 	target_sources(${PROJECT_NAME} PRIVATE
++		src/platform/sdl/sdl2_shader.cpp
++		src/platform/sdl/sdl2_shader.h
+ 		src/platform/sdl/sdl2_ui.cpp
+ 		src/platform/sdl/sdl2_ui.h)
+ 	target_compile_definitions(${PROJECT_NAME} PUBLIC USE_SDL=2)
+diff --git a/src/game_dynrpg.cpp b/src/game_dynrpg.cpp
+index 375bdb7..2cfd4f5 100644
+--- a/src/game_dynrpg.cpp
++++ b/src/game_dynrpg.cpp
+@@ -31,6 +31,7 @@
+ #include "dynrpg_easyrpg.h"
+ #include "dynrpg_textplugin.h"
+ #include "pixel_movement.h"
++#include "screen_shader.h"
+ 
+ enum DynRpg_ParseMode {
+ 	ParseMode_Function,
+@@ -190,6 +191,7 @@ void Game_DynRpg::InitPlugins() {
+ 
+ 	if (Player::IsPatchDynRpg() || Player::HasEasyRpgExtensions()) {
+ 		plugins.emplace_back(new PixelMovement::Plugin(*this));
++		plugins.emplace_back(new ScreenShader::Plugin(*this));
+ 	}
+ 
+ 	plugins_loaded = true;
+diff --git a/src/game_interpreter.cpp b/src/game_interpreter.cpp
+index da58993..238c2e4 100644
+--- a/src/game_interpreter.cpp
++++ b/src/game_interpreter.cpp
+@@ -2118,8 +2118,9 @@ std::optional<bool> Game_Interpreter::HandleDynRpgScript(const lcf::rpg::EventCo
+ 		}
+ 
+ 		if (!Player::IsPatchDynRpg() && Player::HasEasyRpgExtensions()) {
+-			// Only accept commands starting with @easyrpg_ (and the built-in pixel movement's @pixel_)
+-			if (!StartsWith(com.string, "@easyrpg_") && !StartsWith(com.string, "@pixel_")) {
++			// Only accept commands starting with @easyrpg_ (and the built-in pixel movement's
++			// @pixel_ and screen shaders' @shader)
++			if (!StartsWith(com.string, "@easyrpg_") && !StartsWith(com.string, "@pixel_") && !StartsWith(com.string, "@shader")) {
+ 				return {};
+ 			}
+ 		}
+diff --git a/src/game_player.cpp b/src/game_player.cpp
+index 76f852b..d753b9c 100644
+--- a/src/game_player.cpp
++++ b/src/game_player.cpp
+@@ -18,6 +18,7 @@
+ // Headers
+ #include "game_player.h"
+ #include "pixel_movement.h"
++#include "screen_shader.h"
+ #include "async_handler.h"
+ #include "game_actor.h"
+ #include "game_map.h"
+@@ -50,6 +51,7 @@ Game_Player::Game_Player(): Game_PlayerBase(Player)
+ 	SetMoveSpeed(4);
+ 	SetAnimationType(lcf::rpg::EventPage::AnimType_non_continuous);
+ 	PixelMovement::Reset();
++	ScreenShader::ResetSession();
+ }
+ 
+ void Game_Player::SetSaveData(lcf::rpg::SavePartyLocation save)
+diff --git a/src/platform/sdl/sdl2_shader.cpp b/src/platform/sdl/sdl2_shader.cpp
+new file mode 100644
+index 0000000..d0a5151
+--- /dev/null
++++ b/src/platform/sdl/sdl2_shader.cpp
+@@ -0,0 +1,254 @@
++/*
++ * This file is part of EasyRPG Player.
++ *
++ * EasyRPG Player is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * EasyRPG Player is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with EasyRPG Player. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "sdl2_shader.h"
++#include "output.h"
++#include "player.h"
++#include "screen_shader.h"
++
++// Only for the declarations: every function is loaded with SDL_GL_GetProcAddress,
++// so the Player does not link against OpenGL.
++#define GL_GLEXT_PROTOTYPES 1
++#include <SDL_opengl.h>
++
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <string>
++#include <vector>
++
++namespace {
++#define LCF_GL_FUNCTIONS(X) \
++	X(GetIntegerv) X(PushAttrib) X(PopAttrib) X(PushClientAttrib) X(PopClientAttrib) \
++	X(Viewport) X(Disable) X(Begin) X(End) X(TexCoord2f) X(Vertex2f) X(ReadPixels) \
++	X(PixelStorei) X(ActiveTexture) X(CreateShader) X(ShaderSource) X(CompileShader) \
++	X(GetShaderiv) X(GetShaderInfoLog) X(CreateProgram) X(AttachShader) X(LinkProgram) \
++	X(GetProgramiv) X(GetProgramInfoLog) X(DeleteShader) X(DeleteProgram) X(UseProgram) \
++	X(GetUniformLocation) X(Uniform1i) X(Uniform1f) X(Uniform2f) X(Uniform3f) X(Uniform4f)
++
++	struct Gl {
++#define LCF_GL_MEMBER(name) decltype(&::gl##name) name = nullptr;
++		LCF_GL_FUNCTIONS(LCF_GL_MEMBER)
++#undef LCF_GL_MEMBER
++
++		bool Load() {
++			bool ok = true;
++#define LCF_GL_LOAD(name) \
++			name = reinterpret_cast<decltype(name)>(SDL_GL_GetProcAddress("gl" #name)); \
++			if (!name) { Output::Warning("ScreenShader: OpenGL function gl" #name " not found"); ok = false; }
++			LCF_GL_FUNCTIONS(LCF_GL_LOAD)
++#undef LCF_GL_LOAD
++			return ok;
++		}
++	};
++
++	constexpr const char* vertex_source =
++		"#version 120\n"
++		"void main() {\n"
++		"	gl_TexCoord[0] = gl_MultiTexCoord0;\n"
++		"	gl_Position = gl_Vertex;\n"
++		"}\n";
++
++	// What a shader file can use: pixel(uv), resolution and time.
++	constexpr const char* fragment_prefix =
++		"#version 120\n"
++		"uniform sampler2D lcf_screen;\n"
++		"uniform vec2 lcf_tex_scale;\n"
++		"uniform vec2 resolution;\n"
++		"uniform float time;\n"
++		"vec4 pixel(vec2 uv) { return texture2D(lcf_screen, clamp(uv, 0.0, 1.0) * lcf_tex_scale); }\n"
++		"#line 1\n";
++
++	constexpr const char* fragment_suffix =
++		"\nvoid main() { gl_FragColor = vec4(effect(gl_TexCoord[0].xy).rgb, 1.0); }\n";
++
++	void WriteBmp(const char* path, int w, int h, const std::vector<unsigned char>& bgr, int stride) {
++		std::FILE* f = std::fopen(path, "wb");
++		if (!f) {
++			return;
++		}
++		auto u32 = [&](uint32_t v) { unsigned char b[4] = { (unsigned char)v, (unsigned char)(v >> 8), (unsigned char)(v >> 16), (unsigned char)(v >> 24) }; std::fwrite(b, 1, 4, f); };
++		auto u16 = [&](uint16_t v) { unsigned char b[2] = { (unsigned char)v, (unsigned char)(v >> 8) }; std::fwrite(b, 1, 2, f); };
++		std::fwrite("BM", 1, 2, f);
++		u32(54 + stride * h); u32(0); u32(54);
++		u32(40); u32(w); u32(h); u16(1); u16(24); u32(0); u32(stride * h); u32(2835); u32(2835); u32(0); u32(0);
++		std::fwrite(bgr.data(), 1, bgr.size(), f); // OpenGL rows are bottom-up, like BMP
++		std::fclose(f);
++	}
++}
++
++struct Sdl2ShaderPass::Impl {
++	Gl gl;
++	bool checked = false;
++	bool usable = false;
++	const ScreenShader::Shader* shader = nullptr;
++	GLuint program = 0;
++	std::string failed; // the shader that did not compile
++	const char* capture = nullptr;
++	int capture_frame = -1; // -1: every 10 frames
++	bool captured = false;
++
++	GLuint Compile(GLenum type, const std::string& source, const std::string& name) {
++		GLuint s = gl.CreateShader(type);
++		const char* text = source.c_str();
++		gl.ShaderSource(s, 1, &text, nullptr);
++		gl.CompileShader(s);
++		GLint ok = 0;
++		gl.GetShaderiv(s, GL_COMPILE_STATUS, &ok);
++		if (!ok) {
++			char log[2048] = {};
++			gl.GetShaderInfoLog(s, sizeof(log), nullptr, log);
++			Output::Warning("ScreenShader: Shader/{}.glsl does not compile:\n{}", name, log);
++			gl.DeleteShader(s);
++			return 0;
++		}
++		return s;
++	}
++
++	bool Use(const ScreenShader::Shader& next) {
++		if (shader == &next && program) {
++			return true;
++		}
++		if (failed == next.name) {
++			return false;
++		}
++		if (program) {
++			gl.DeleteProgram(program);
++			program = 0;
++		}
++		shader = &next;
++		GLuint vs = Compile(GL_VERTEX_SHADER, vertex_source, next.name);
++		GLuint fs = Compile(GL_FRAGMENT_SHADER, fragment_prefix + next.source + fragment_suffix, next.name);
++		if (vs && fs) {
++			program = gl.CreateProgram();
++			gl.AttachShader(program, vs);
++			gl.AttachShader(program, fs);
++			gl.LinkProgram(program);
++			GLint ok = 0;
++			gl.GetProgramiv(program, GL_LINK_STATUS, &ok);
++			if (!ok) {
++				char log[2048] = {};
++				gl.GetProgramInfoLog(program, sizeof(log), nullptr, log);
++				Output::Warning("ScreenShader: Shader/{}.glsl does not link:\n{}", next.name, log);
++				gl.DeleteProgram(program);
++				program = 0;
++			}
++		}
++		if (vs) gl.DeleteShader(vs);
++		if (fs) gl.DeleteShader(fs);
++		if (!program) {
++			failed = next.name;
++			return false;
++		}
++		Output::Debug("ScreenShader: using Shader/{}.glsl", next.name);
++		return true;
++	}
++};
++
++Sdl2ShaderPass::Sdl2ShaderPass() : impl(std::make_unique<Impl>()) {
++	impl->capture = std::getenv("EASYRPG_SHADER_CAPTURE");
++	if (const char* frame = std::getenv("EASYRPG_SHADER_CAPTURE_FRAME")) {
++		impl->capture_frame = std::atoi(frame);
++	}
++}
++
++Sdl2ShaderPass::~Sdl2ShaderPass() = default;
++
++bool Sdl2ShaderPass::Draw(SDL_Renderer* renderer, SDL_Texture* texture, const SDL_Rect& viewport, int screen_width, int screen_height) {
++	std::vector<ScreenShader::Param> values;
++	const ScreenShader::Shader* shader = ScreenShader::Current(values);
++	if (!shader) {
++		return false;
++	}
++	auto& gl = impl->gl;
++	if (!impl->checked) {
++		impl->checked = true;
++		SDL_RendererInfo info = {};
++		SDL_GetRendererInfo(renderer, &info);
++		if (!info.name || std::strcmp(info.name, "opengl") != 0) {
++			Output::Warning("ScreenShader: shaders need SDL's OpenGL renderer, not \"{}\"; drawing without them", info.name ? info.name : "?");
++			return false;
++		}
++		impl->usable = gl.Load();
++	}
++	if (!impl->usable) {
++		return false;
++	}
++
++	SDL_RenderFlush(renderer); // SDL's queued commands (the clear) first
++	if (!impl->Use(*shader)) {
++		return false;
++	}
++
++	GLint previous_program = 0;
++	gl.GetIntegerv(GL_CURRENT_PROGRAM, &previous_program);
++	gl.PushAttrib(GL_ALL_ATTRIB_BITS);
++	gl.PushClientAttrib(GL_CLIENT_ALL_ATTRIB_BITS);
++	gl.ActiveTexture(GL_TEXTURE0);
++	float tex_w = 1.f, tex_h = 1.f;
++	bool drawn = false;
++	if (SDL_GL_BindTexture(texture, &tex_w, &tex_h) == 0) {
++		GLuint p = impl->program;
++		gl.UseProgram(p);
++		gl.Uniform1i(gl.GetUniformLocation(p, "lcf_screen"), 0);
++		gl.Uniform2f(gl.GetUniformLocation(p, "lcf_tex_scale"), tex_w, tex_h);
++		gl.Uniform2f(gl.GetUniformLocation(p, "resolution"), static_cast<float>(screen_width), static_cast<float>(screen_height));
++		gl.Uniform1f(gl.GetUniformLocation(p, "time"), SDL_GetTicks() / 1000.f);
++		for (const auto& v : values) {
++			GLint at = gl.GetUniformLocation(p, v.name.c_str());
++			switch (v.size) {
++				case 1: gl.Uniform1f(at, v.value[0]); break;
++				case 2: gl.Uniform2f(at, v.value[0], v.value[1]); break;
++				case 3: gl.Uniform3f(at, v.value[0], v.value[1], v.value[2]); break;
++				default: gl.Uniform4f(at, v.value[0], v.value[1], v.value[2], v.value[3]); break;
++			}
++		}
++
++		int out_w = 0, out_h = 0;
++		SDL_GetRendererOutputSize(renderer, &out_w, &out_h);
++		const int gl_y = out_h - viewport.y - viewport.h; // OpenGL counts from the bottom
++		gl.Viewport(viewport.x, gl_y, viewport.w, viewport.h);
++		gl.Disable(GL_BLEND);
++		gl.Disable(GL_SCISSOR_TEST);
++		gl.Disable(GL_DEPTH_TEST);
++		gl.Disable(GL_CULL_FACE);
++		gl.Begin(GL_QUADS);
++		gl.TexCoord2f(0.f, 0.f); gl.Vertex2f(-1.f, 1.f);
++		gl.TexCoord2f(1.f, 0.f); gl.Vertex2f(1.f, 1.f);
++		gl.TexCoord2f(1.f, 1.f); gl.Vertex2f(1.f, -1.f);
++		gl.TexCoord2f(0.f, 1.f); gl.Vertex2f(-1.f, -1.f);
++		gl.End();
++
++		const int frames = Player::GetFrames();
++		const bool capture_now = impl->capture_frame < 0 ? frames % 10 == 0 : (!impl->captured && frames >= impl->capture_frame);
++		if (impl->capture && capture_now && viewport.w > 0 && viewport.h > 0) {
++			impl->captured = true;
++			const int stride = (viewport.w * 3 + 3) & ~3;
++			std::vector<unsigned char> bgr(static_cast<size_t>(stride) * viewport.h);
++			gl.PixelStorei(GL_PACK_ALIGNMENT, 4);
++			gl.ReadPixels(viewport.x, gl_y, viewport.w, viewport.h, GL_BGR, GL_UNSIGNED_BYTE, bgr.data());
++			WriteBmp(impl->capture, viewport.w, viewport.h, bgr, stride);
++		}
++
++		gl.UseProgram(previous_program);
++		SDL_GL_UnbindTexture(texture);
++		drawn = true;
++	}
++	gl.PopClientAttrib();
++	gl.PopAttrib();
++	return drawn;
++}
+diff --git a/src/platform/sdl/sdl2_shader.h b/src/platform/sdl/sdl2_shader.h
+new file mode 100644
+index 0000000..1014b32
+--- /dev/null
++++ b/src/platform/sdl/sdl2_shader.h
+@@ -0,0 +1,49 @@
++/*
++ * This file is part of EasyRPG Player.
++ *
++ * EasyRPG Player is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * EasyRPG Player is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with EasyRPG Player. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#ifndef EP_SDL2_SHADER_H
++#define EP_SDL2_SHADER_H
++
++#include <SDL.h>
++#include <memory>
++
++/**
++ * Draws the game texture with a screen shader (see screen_shader.h) through the
++ * OpenGL context of SDL's "opengl" renderer: SDL draws everything else, this pass
++ * only replaces the final copy of the game texture to the window.
++ *
++ * For tests: with the environment variable EASYRPG_SHADER_CAPTURE=<file.bmp> the
++ * shaded frame is written to that file every 10 frames, or only once at frame
++ * EASYRPG_SHADER_CAPTURE_FRAME=<n> (Player::GetFrames()) when that is set.
++ */
++class Sdl2ShaderPass {
++public:
++	Sdl2ShaderPass();
++	~Sdl2ShaderPass();
++
++	/**
++	 * Draws `texture` into `viewport` with the current screen shader.
++	 * @return false if there is no shader or it cannot be used; draw normally then.
++	 */
++	bool Draw(SDL_Renderer* renderer, SDL_Texture* texture, const SDL_Rect& viewport, int screen_width, int screen_height);
++
++private:
++	struct Impl;
++	std::unique_ptr<Impl> impl;
++};
++
++#endif
+diff --git a/src/platform/sdl/sdl2_ui.cpp b/src/platform/sdl/sdl2_ui.cpp
+index 8d31c20..14443a4 100644
+--- a/src/platform/sdl/sdl2_ui.cpp
++++ b/src/platform/sdl/sdl2_ui.cpp
+@@ -20,6 +20,7 @@
+ #include "game_config.h"
+ #include "system.h"
+ #include "sdl2_ui.h"
++#include "screen_shader.h"
+ 
+ #ifdef _WIN32
+ #  include <windows.h>
+@@ -385,6 +386,10 @@ bool Sdl2Ui::RefreshDisplayMode() {
+ 		SetAppIcon();
+ 
+ 		uint32_t renderer_flags = 0;
++		if (ScreenShader::IsUsed()) {
++			// Screen shaders are drawn through the OpenGL renderer's context.
++			SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
++		}
+ 		if (vsync) {
+ 			renderer_flags |= SDL_RENDERER_PRESENTVSYNC;
+ 		}
+@@ -679,7 +684,12 @@ void Sdl2Ui::UpdateDisplay() {
+ 	}
+ 
+ 	SDL_RenderClear(sdl_renderer);
+-	if (vcfg.scaling_mode.Get() == ConfigEnum::ScalingMode::Bilinear && window.scale > 0.f) {
++	if (!shader_pass) {
++		shader_pass = std::make_unique<Sdl2ShaderPass>();
++	}
++	if (shader_pass->Draw(sdl_renderer, sdl_texture_game, viewport, main_surface->width(), main_surface->height())) {
++		// Drawn with the screen shader
++	} else if (vcfg.scaling_mode.Get() == ConfigEnum::ScalingMode::Bilinear && window.scale > 0.f) {
+ 		// Render game texture on the scaled texture
+ 		SDL_SetRenderTarget(sdl_renderer, sdl_texture_scaled);
+ 		SDL_RenderClear(sdl_renderer);
+diff --git a/src/platform/sdl/sdl2_ui.h b/src/platform/sdl/sdl2_ui.h
+index 56849ee..be9e912 100644
+--- a/src/platform/sdl/sdl2_ui.h
++++ b/src/platform/sdl/sdl2_ui.h
+@@ -26,6 +26,8 @@
+ 
+ #include <array>
+ #include <SDL.h>
++#include <memory>
++#include "sdl2_shader.h"
+ 
+ extern "C" {
+ 	union SDL_Event;
+@@ -135,6 +137,9 @@ private:
+ 	SDL_Renderer* sdl_renderer = nullptr;
+ 	SDL_Joystick *sdl_joystick = nullptr;
+ 
++	/** Screen shader pass (screen_shader.h), with the OpenGL renderer. */
++	std::unique_ptr<Sdl2ShaderPass> shader_pass;
++
+ 	Rect window_mode_metrics;
+ 	SDL_Rect viewport = {};
+ 	struct {
+diff --git a/src/screen_shader.cpp b/src/screen_shader.cpp
+new file mode 100644
+index 0000000..603789c
+--- /dev/null
++++ b/src/screen_shader.cpp
+@@ -0,0 +1,304 @@
++/*
++ * This file is part of EasyRPG Player.
++ *
++ * EasyRPG Player is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * EasyRPG Player is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with EasyRPG Player. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "screen_shader.h"
++#include "filefinder.h"
++#include "game_map.h"
++#include "main_data.h"
++#include "output.h"
++
++#ifdef HAVE_NLOHMANN_JSON
++#include "json_helper.h"
++#endif
++
++#include <cctype>
++#include <cstdlib>
++#include <iterator>
++#include <map>
++#include <optional>
++#include <sstream>
++
++namespace {
++	// A shader with parameter values, as chosen for a map.
++	struct Choice {
++		std::string shader;
++		std::map<std::string, std::vector<float>> params;
++	};
++
++	struct ShaderState {
++		bool loaded = false;
++		bool used = false;
++		std::optional<Choice> fallback;    // "default"
++		std::map<int, Choice> maps;        // "maps"
++		std::map<std::string, std::optional<ScreenShader::Shader>> shaders; // loaded files (nullopt: missing)
++		// Session (comment commands)
++		std::optional<std::string> session_shader;
++		std::map<std::string, std::map<std::string, std::vector<float>>> session_params;
++	} state;
++
++#ifdef HAVE_NLOHMANN_JSON
++	Choice ReadChoice(const json& j) {
++		Choice c;
++		if (j.is_string()) {
++			c.shader = j.get<std::string>();
++			return c;
++		}
++		if (!j.is_object()) {
++			return c;
++		}
++		c.shader = j.value("shader", "");
++		if (j.contains("params") && j["params"].is_object()) {
++			for (const auto& [name, value] : j["params"].items()) {
++				std::vector<float> v;
++				if (value.is_number()) {
++					v.push_back(value.get<float>());
++				} else if (value.is_array()) {
++					for (const auto& x : value) {
++						if (x.is_number()) {
++							v.push_back(x.get<float>());
++						}
++					}
++				}
++				c.params[name] = v;
++			}
++		}
++		return c;
++	}
++#endif
++
++	void Load() {
++		if (state.loaded) {
++			return;
++		}
++		if (!FileFinder::Game()) {
++			return; // no game yet (game browser): try again later
++		}
++		state.loaded = true;
++		auto is = FileFinder::Game().OpenFile("lcf-plugins", "shaders.json");
++		if (!is) {
++			return;
++		}
++		state.used = true;
++#ifdef HAVE_NLOHMANN_JSON
++		std::string text((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
++		json j = json::parse(text, nullptr, false);
++		if (j.is_discarded() || !j.is_object()) {
++			Output::Warning("ScreenShader: lcf-plugins/shaders.json is not valid JSON");
++			return;
++		}
++		if (j.contains("default") && !j["default"].is_null()) {
++			state.fallback = ReadChoice(j["default"]);
++		}
++		if (j.contains("maps") && j["maps"].is_object()) {
++			for (const auto& [id, choice] : j["maps"].items()) {
++				state.maps[std::atoi(id.c_str())] = ReadChoice(choice);
++			}
++		}
++		Output::Debug("ScreenShader: {} map(s) with a shader{}", state.maps.size(),
++			state.fallback ? ", default \"" + state.fallback->shader + "\"" : "");
++#else
++		Output::Warning("ScreenShader: this Player was built without JSON support; shaders.json is ignored");
++#endif
++	}
++
++	const ScreenShader::Shader* Find(const std::string& name) {
++		auto it = state.shaders.find(name);
++		if (it == state.shaders.end()) {
++			std::optional<ScreenShader::Shader> shader;
++			auto is = FileFinder::Game().OpenFile("Shader", name + ".glsl");
++			if (is) {
++				shader = ScreenShader::Shader();
++				shader->name = name;
++				shader->source.assign(std::istreambuf_iterator<char>(is), std::istreambuf_iterator<char>());
++				shader->params = ScreenShader::ParseParams(shader->source);
++				Output::Debug("ScreenShader: loaded Shader/{}.glsl ({} parameter(s))", name, shader->params.size());
++			} else {
++				Output::Warning("ScreenShader: Shader/{}.glsl not found", name);
++			}
++			it = state.shaders.emplace(name, std::move(shader)).first;
++		}
++		return it->second ? &*it->second : nullptr;
++	}
++
++	void Apply(std::vector<ScreenShader::Param>& values, const std::map<std::string, std::vector<float>>& params) {
++		for (auto& p : values) {
++			auto it = params.find(p.name);
++			if (it != params.end()) {
++				for (int i = 0; i < p.size && i < static_cast<int>(it->second.size()); ++i) {
++					p.value[i] = it->second[i];
++				}
++			}
++		}
++	}
++
++	std::string Trim(std::string_view s) {
++		size_t a = 0, b = s.size();
++		while (a < b && std::isspace(static_cast<unsigned char>(s[a]))) ++a;
++		while (b > a && std::isspace(static_cast<unsigned char>(s[b - 1]))) --b;
++		return std::string(s.substr(a, b - a));
++	}
++}
++
++bool ScreenShader::IsUsed() {
++	Load();
++	return state.used;
++}
++
++std::vector<ScreenShader::Param> ScreenShader::ParseParams(std::string_view source) {
++	std::vector<Param> params;
++	std::istringstream lines{std::string(source)};
++	std::string line;
++	while (std::getline(lines, line)) {
++		auto code = Trim(line);
++		if (code.compare(0, 8, "uniform ") != 0) {
++			continue;
++		}
++		std::string comment;
++		auto slashes = code.find("//");
++		if (slashes != std::string::npos) {
++			comment = code.substr(slashes + 2);
++			code = Trim(code.substr(0, slashes));
++		}
++		// "uniform <type> <name>;"
++		std::istringstream words(code);
++		std::string uniform, type, name;
++		words >> uniform >> type >> name;
++		if (!name.empty() && name.back() == ';') {
++			name.pop_back();
++		}
++		Param p;
++		if (type == "float") p.size = 1;
++		else if (type == "vec2") p.size = 2;
++		else if (type == "vec3") p.size = 3;
++		else if (type == "vec4") p.size = 4;
++		else continue;
++		if (name.empty()) {
++			continue;
++		}
++		p.name = name;
++		// Defaults: the numbers in the comment before an optional "[min, max]".
++		auto bracket = comment.find('[');
++		if (bracket != std::string::npos) {
++			comment.resize(bracket);
++		}
++		int n = 0;
++		const char* s = comment.c_str();
++		while (*s && n < p.size) {
++			if (std::isdigit(static_cast<unsigned char>(*s)) || ((*s == '-' || *s == '.') && std::isdigit(static_cast<unsigned char>(s[1])))) {
++				char* end = nullptr;
++				p.value[n++] = std::strtof(s, &end);
++				s = end;
++			} else {
++				++s;
++			}
++		}
++		if (n == 1) {
++			for (int i = 1; i < p.size; ++i) p.value[i] = p.value[0];
++		}
++		if (p.size == 4 && n != 1 && n < 4) {
++			p.value[3] = 1.0f; // a colour without alpha
++		}
++		params.push_back(p);
++	}
++	return params;
++}
++
++const ScreenShader::Shader* ScreenShader::Current(std::vector<Param>& values) {
++	values.clear();
++	Load();
++	if (!state.used) {
++		return nullptr;
++	}
++	const Choice* choice = nullptr;
++	auto map = state.maps.find(Main_Data::game_player ? Game_Map::GetMapId() : 0);
++	if (map != state.maps.end()) {
++		choice = &map->second;
++	} else if (state.fallback) {
++		choice = &*state.fallback;
++	}
++	std::string name = choice ? choice->shader : "";
++	if (state.session_shader) {
++		name = *state.session_shader;
++	}
++	if (name.empty() || name == "none") {
++		return nullptr;
++	}
++	const Shader* shader = Find(name);
++	if (!shader) {
++		return nullptr;
++	}
++	values = shader->params;
++	if (choice && choice->shader == name) {
++		Apply(values, choice->params);
++	}
++	auto session = state.session_params.find(name);
++	if (session != state.session_params.end()) {
++		Apply(values, session->second);
++	}
++	return shader;
++}
++
++void ScreenShader::ResetSession() {
++	state.session_shader.reset();
++	state.session_params.clear();
++}
++
++void ScreenShader::Reset() {
++	state = ShaderState();
++}
++
++bool ScreenShader::Plugin::Invoke(std::string_view func, dyn_arg_list args, bool&, Game_Interpreter*) {
++	if (func == "shader") {
++		bool okay = false;
++		std::string name;
++		std::tie(name) = DynRpg::ParseArgs<std::string>(func, args, &okay);
++		if (okay) {
++			if (name.empty()) {
++				state.session_shader.reset();
++			} else {
++				state.session_shader = name;
++			}
++			Output::Debug("ScreenShader: @shader \"{}\"", name);
++		}
++		return true;
++	}
++	if (func == "shader_param") {
++		bool okay = false;
++		std::string name;
++		float value = 0.f;
++		std::tie(name, value) = DynRpg::ParseArgs<std::string, float>(func, args, &okay);
++		if (!okay) {
++			return true;
++		}
++		if (args.size() > 2) {
++			float div = 1.f;
++			std::tie(std::ignore, std::ignore, div) = DynRpg::ParseArgs<std::string, float, float>(func, args, &okay);
++			if (okay && div != 0.f) {
++				value /= div;
++			}
++		}
++		std::vector<Param> values;
++		const Shader* shader = Current(values);
++		if (!shader) {
++			Output::Debug("ScreenShader: @shader_param {} without a shader", name);
++			return true;
++		}
++		state.session_params[shader->name][name] = { value, value, value, value };
++		return true;
++	}
++	return false;
++}
+diff --git a/src/screen_shader.h b/src/screen_shader.h
+new file mode 100644
+index 0000000..98d8547
+--- /dev/null
++++ b/src/screen_shader.h
+@@ -0,0 +1,95 @@
++/*
++ * This file is part of EasyRPG Player.
++ *
++ * EasyRPG Player is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * EasyRPG Player is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with EasyRPG Player. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#ifndef EP_SCREEN_SHADER_H
++#define EP_SCREEN_SHADER_H
++
++#include "game_dynrpg.h"
++#include <array>
++#include <string>
++#include <string_view>
++#include <vector>
++
++/**
++ * Screen shaders (prototype): a GLSL post-process pass over the finished frame,
++ * chosen per map. The pass itself is drawn by the platform UI (SDL2 with the
++ * OpenGL renderer, see platform/sdl/sdl2_shader.h); this part decides which shader
++ * and which parameter values to use.
++ *
++ * Opt-in per game: lcf-plugins/shaders.json in the game folder (written by the
++ * shader plugin of godot-lcf-editor), with shaders in the game's Shader folder:
++ *
++ *     { "default": { "shader": "crt" },
++ *       "maps": { "1": { "shader": "night", "params": { "strength": 0.8 } } } }
++ *
++ * A shader file (Shader/<name>.glsl) defines `vec4 effect(vec2 uv)` and may call
++ * `pixel(uv)` (the game screen, uv 0..1 from the top left) and use `resolution`
++ * (the screen size in pixels) and `time` (seconds). Parameters are uniforms with
++ * their default value in a trailing comment:
++ *
++ *     uniform float strength; // 0.7 [0, 1]
++ *     uniform vec3 tint; // color 0.4, 0.5, 1.0
++ *
++ * Comment commands (with EasyRPG extensions or in DynRPG mode):
++ *   @shader "name"                      use this shader from now on ("none" for no
++ *                                       shader, "" to go back to the map's shader)
++ *   @shader_param "name", value[, div]  set a parameter of the shader in use to
++ *                                       value / div (e.g. V12, 100 for a variable)
++ */
++namespace ScreenShader {
++	/** A shader parameter: a float uniform or a vector of up to four floats. */
++	struct Param {
++		std::string name;
++		int size = 1;
++		std::array<float, 4> value = {};
++	};
++
++	/** A shader file. */
++	struct Shader {
++		std::string name;
++		std::string source;
++		std::vector<Param> params; // with their defaults
++	};
++
++	/** True if the game has lcf-plugins/shaders.json (the UI then needs OpenGL). */
++	bool IsUsed();
++
++	/**
++	 * The shader for the current frame, from the map's setting or @shader.
++	 * @param values receives the parameter values to use
++	 * @return the shader, or nullptr for none. Valid until Reset().
++	 */
++	const Shader* Current(std::vector<Param>& values);
++
++	/** The parameters a shader source declares, with their defaults. */
++	std::vector<Param> ParseParams(std::string_view source);
++
++	/** Forgets @shader and @shader_param (new game, loaded game). */
++	void ResetSession();
++
++	/** Forgets everything, including the settings file and loaded shaders. */
++	void Reset();
++
++	/** The shader comment commands. */
++	class Plugin : public DynRpgPlugin {
++	public:
++		explicit Plugin(Game_DynRpg& instance) : DynRpgPlugin("ScreenShader", instance) {}
++		bool Invoke(std::string_view func, dyn_arg_list args, bool& do_yield, Game_Interpreter* interpreter) override;
++	};
++}
++
++#endif
+-- 
+2.43.0
+
