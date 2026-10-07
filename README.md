@@ -4,7 +4,7 @@
 
 Godot editor for RPG Maker 2000/2003 projects (LCF format), built on [liblcf](https://github.com/EasyRPG/liblcf). Extensible through plugins, playtested with [EasyRPG Player](https://github.com/EasyRPG/Player).
 
-> **Status: early prototype.** The editor plugin opens an existing RPG Maker 2000/2003 project, lets you paint its maps, edit its events and their commands, and browse and edit its whole database inside Godot. Other Godot plugins can extend it ([writing plugins](#writing-plugins)). Test Play with EasyRPG Player comes next — see the [roadmap](#roadmap). Keep backups of your projects while trying it.
+> **Status: early prototype.** The editor plugin opens an existing RPG Maker 2000/2003 project, lets you paint its maps, edit its events and their commands, and browse and edit its whole database inside Godot. **Test Play** runs it in EasyRPG Player, and other Godot plugins can extend both the editor and, through comment commands, the game ([writing plugins](#writing-plugins)). Showcase plugins come next — see the [roadmap](#roadmap). Keep backups of your projects while trying it.
 
 ## Vision
 
@@ -33,7 +33,8 @@ The full vision, the existing landscape and the options considered are in [`docs
 - **Painting maps:** pick a tile in the palette (right of the map) and paint with **Pencil**, **Rectangle** or **Fill** on the lower or upper layer; right-click or **Pick** takes the tile under the cursor. Autotiles and water connect automatically: the painted tiles and their neighbours get the variants RPG Maker would choose, including shores and deep-water edges. Hold **Shift** to place the exact tile without autotiling. Every stroke can be undone with Godot's undo (Ctrl+Z).
 - **Events:** the **Events** layer button switches the map to event editing. Click an event to select it, drag it to move it, double-click it to open the **event editor**, or double-click an empty cell to create one (named and numbered like RPG Maker does). Right-click for New, Edit, Copy, Paste and Delete; Delete, Ctrl+C and Ctrl+V work too.
 - **Event editor:** name, pages as tabs (New page, Copy page, Delete page), every page setting (conditions, graphic, movement, trigger, layer, …) with readable choices such as “Action Button” or “Stay Still”, and the page's command list as RPG Maker shows it (“◆Control Switches: [0003: Chest opened] ON”). Every change can be undone with Ctrl+Z in the map.
-- **Event commands:** **Insert…** opens a searchable list of commands by group; the common ones (Show Message, Control Switches and Variables, Conditional Branch, Teleport, Change Money/Items/Party/HP, Call Event, Wait, sounds, labels, loops, …) have dialogs with named choices (switches, items, maps and events by name). These dialogs are generated from a short description of each command, the same way plugins add their own ([below](#adding-event-commands-from-a-plugin)). Editing follows the list's structure like RPG Maker: a branch comes with its bodies and Else, a message's lines stay together, Delete, Copy, Cut and Paste (also from the right-click menu) work on whole blocks. Every other command can be inserted and edited as raw data (code, indent, text, parameters), so nothing is out of reach.
+- **Event commands:** **Insert…** opens a searchable list of commands by group; the common ones (Show Message, Control Switches and Variables, Conditional Branch, Teleport, Change Money/Items/Party/HP, Call Event, Wait, sounds, labels, loops, …) have dialogs with named choices (switches, items, maps and events by name). These dialogs are generated from a short description of each command, the same way plugins add their own ([below](#event-commands)). Editing follows the list's structure like RPG Maker: a branch comes with its bodies and Else, a message's lines stay together, Delete, Copy, Cut and Paste (also from the right-click menu) work on whole blocks. Every other command can be inserted and edited as raw data (code, indent, text, parameters), so nothing is out of reach.
+- **Test Play:** **▶ Test Play** (in the LCF Project dock or the Test Play panel at the bottom) saves the project and runs it in [EasyRPG Player](https://easyrpg.org/player/) in test mode (F9 opens the debug menu). On the Events layer, right-click → **Play from here** starts a new game on that cell. The Player's output appears live in the **Test Play** panel; **Stop** ends the game. Under **Settings…** you choose the Player program, whether to skip the title screen, extra Player options, and whether the game enables EasyRPG extensions (see [comment commands](#runtime-half-comment-commands)).
 - **Saving maps** works like the database: **Save map** makes a backup, writes a temporary file, reads it back and compares it before replacing `Map####.lmu`; **Revert** drops unsaved changes, and Godot asks about unsaved maps when it closes.
 - The **Database** tab shows every section of the database (actors, classes, skills, items, enemies, troops, states, vocabulary, system, common events, switches, variables, …). Every field of the selected entry is listed, nested structures can be expanded, event commands appear by name with their indentation, and references such as `class_id` or `switch_id` show the name they point to. Fields come straight from liblcf's own description of the format, so new fields (including Maniacs and EasyRPG extensions) appear automatically.
 - **Editing the database:** double-click a field to change it (checkbox for yes/no, number box, text field, list of named choices). **Save** writes `RPG_RT.ldb`; **Revert** drops unsaved changes, and Godot warns about unsaved changes when it closes. **Common events** get the same command list as map events.
@@ -58,6 +59,8 @@ if project.load("C:/Games/MyRpg") == OK:
 ```
 
 ![The Map tab on the Events layer with the chest in the demo's house selected, and the event editor open on it: name “Chest”, tabs for page 1 and 2, the page settings (Stay Still, Action Button, Same as Hero, …) and the command list (Play Sound Effect, Show Message, Change Money, Control Switches). The generated dialog of the selected Control Switches command is open: Target “One switch”, Switch “0003: Chest opened”, Set to “ON”, with Apply and Raw… buttons.](docs/images/editor-events.png)
+
+![Test Play: the Godot editor with the demo's World map and its selected autorun event, the Test Play panel at the bottom showing EasyRPG Player's log ending in “Info: Hello from the LCF Editor!”, and the game running in EasyRPG Player's window on the right, where the same message appears on screen.](docs/images/editor-test-play.png)
 
 ![The Database tab with the demo's actor "Hero" selected: its fields on the right, the title just changed to "Knight of the Lake", "Unsaved changes" with Save and Revert buttons at the top, references such as class_id shown as "1 · Warrior", and the number editor open for final_level.](docs/images/editor-database.png)
 
@@ -115,7 +118,8 @@ func _lcf_editor_closing(api: LcfEditorAPI) -> void:
 | Tabs | `add_tab(control, title)`, `show_tab(control)`, `remove_tab(control)` |
 | Map preview | `set_map_material(material)`: a material (e.g. a shader) on the map's tile layers; `redraw_map()` |
 | Plugin data | `get_plugin_data(id, default)`, `set_plugin_data(id, data)`: JSON in `lcf-plugins/<id>.json` inside the RPG Maker project, so it travels with the game for the runtime half of a plugin (RPG Maker and EasyRPG Player ignore the folder) |
-| Event commands | `LcfCommands.register(schema)`, see below |
+| Event commands | `LcfCommands.register(schema)`, see below; commands for the game as comments, see [runtime half](#runtime-half-comment-commands) |
+| Test Play | `start_test_play(map_id, x, y)`: saves and runs the game (from a cell with a map ID) |
 
 ### Event commands
 
@@ -142,6 +146,27 @@ func _exit_tree() -> void:
 
 The command then appears under **Insert…**, gets its dialog and a readable line in the list. Use method callables (not lambdas) for a schema's `summary` and `sync`: the registry outlives scripts, and Godot cannot free a lambda after its script is gone. Parameter types include numbers, yes/no, choices, database references (`switch`, `variable`, `item`, `actor`, …), `map` and `event`; fields can depend on others (`"when": { 0: 1 }`), and a command can open a block (`"block": { "end": … }`). The built-in commands are described the same way, in [`builtin_commands.gd`](addons/lcf_editor/builtin_commands.gd).
 
+### Runtime half: comment commands
+
+A plugin's new game mechanics run in EasyRPG Player. Until the Player has an official plugin interface (the plan in [`docs/vision.tex`](docs/vision.tex) is to work that out with the EasyRPG team rather than fork the Player), new commands are stored the way RPG Maker patches have done for years: as **event comments in DynRPG syntax**, `@name arg, "text", …`. RPG Maker, the original runtime and every other tool keep them as ordinary comments, and EasyRPG Player executes them: commands starting with `easyrpg_` when the game enables EasyRPG extensions (`[Patch] EasyRPG=1` in its `EasyRPG.ini`, a checkbox in the Test Play settings), and any command in DynRPG mode, where a runtime plugin handles it.
+
+In the editor, such a command is a schema with `comment` instead of `code`; it gets a dialog, a line in the list and a place under **Insert…** like any other command, and is stored as the comment:
+
+```gdscript
+LcfCommands.register({
+    "comment": "pixel_move", "name": "Move by Pixels", "group": "Map",
+    "runtime": "EasyRPG Player with the pixel movement plugin",
+    "params": [
+        { "index": 0, "label": "Event", "type": "event", "default": 10005 },
+        { "index": 1, "label": "Right", "type": "int" },
+        { "index": 2, "label": "Down", "type": "int" },
+    ],
+})
+# Inserting it with the dialog stores the event comment  @pixel_move 10005, 4, -2
+```
+
+Arguments are numbers or (with `"type": "string"`) quoted strings, read the way EasyRPG Player reads them. The editor already offers EasyRPG Player's own comment commands this way: **Log Message** (`@easyrpg_output`, shown in the Player's log and on screen; the screenshot above comes from one) and **Add Numbers** (`@easyrpg_add`). Settings that are not commands, such as per-event hitboxes, go into the plugin's data file (`lcf-plugins/<id>.json`), which the runtime half reads from the game folder.
+
 ## Repository layout
 
 ```
@@ -160,7 +185,7 @@ docs/                      Vision document and README images
 
 ## Download
 
-Every push is built and tested on **Windows** and **Linux** by [GitHub Actions](https://github.com/depuschm/godot-lcf-editor/actions/workflows/build.yml): the smoke test, the round-trip test on the demo and on EasyRPG's TestGame (2000, 2003, Maniacs), the event command, plugin API and event editor tests, and a check that the Godot editor loads both plugins without script errors.
+Every push is built and tested on **Windows** and **Linux** by [GitHub Actions](https://github.com/depuschm/godot-lcf-editor/actions/workflows/build.yml): the smoke test, the round-trip test on the demo and on EasyRPG's TestGame (2000, 2003, Maniacs), the event command, plugin API, Test Play and event editor tests, and a check that the Godot editor loads both plugins without script errors.
 
 - **Releases:** ready-to-use addon zips with Windows and Linux binaries appear under [Releases](https://github.com/depuschm/godot-lcf-editor/releases) once a version is tagged.
 - **Latest build:** open the newest successful run on the [Actions page](https://github.com/depuschm/godot-lcf-editor/actions/workflows/build.yml) and download `lcf_editor-Windows` or `lcf_editor-Linux` (needs a GitHub login).
@@ -223,6 +248,14 @@ Drives `LcfEditorAPI` with the real map and database views and the example plugi
 godot --headless --path . --script res://tests/test_plugin_api.gd
 ```
 
+### Test Play test
+
+Checks the Player's command line, the EasyRPG.ini setting, and starting, logging and stopping a process (on Linux and macOS a shell script stands in for the Player). With the path of a real EasyRPG Player it runs end to end: a copy of the demo gets an autorun event with the Log Message comment command, and its message must arrive in the Test Play log (needs a display, e.g. `xvfb-run`):
+
+```bash
+godot --headless --path . --script res://tests/test_test_play.gd -- /path/to/easyrpg-player
+```
+
 ### Event editor test
 
 Drives the real map view, event editor and database view without a window, on a copy of `demo/`: creating, renaming, moving, copying and deleting events, page settings, pages, the command picker and generated dialogs, branches with and without Else, copy and paste of blocks, the undo states, and common event commands.
@@ -260,7 +293,7 @@ cmake -S tools -B build-tools && cmake --build build-tools
 | M4a | Event editor: events on the map, pages, page settings, command lists (raw editing), undo ✅ |
 | M4b | Data-driven dialogs for event commands, registered by plugins; block-aware editing ✅ |
 | M5 | Plugin API for the editor: map tools, event editor panels, tabs, map material, plugin data, signals; example plugin ✅ |
-| M6 | Test Play with EasyRPG Player; runtime extension mechanism |
+| M6 | Test Play with EasyRPG Player; runtime extension mechanism (comment commands, plugin data) ✅ |
 | M7 | Showcase plugins: pixel-perfect movement, shader support |
 
 ## Contributing

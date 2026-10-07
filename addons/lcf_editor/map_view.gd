@@ -16,6 +16,8 @@ signal map_changed(map_id: int)
 signal map_saved(map_id: int)
 ## The selected event on the Events layer changed (-1: none).
 signal event_selected(map_id: int, event_id: int)
+## The user wants to test play from a cell ("Play from here" on the Events layer).
+signal play_from_here(map_id: int, x: int, y: int)
 
 const TILE := 16
 const ZOOM_STEPS: Array[float] = [0.5, 1.0, 2.0, 3.0, 4.0, 6.0]
@@ -676,6 +678,8 @@ func _open_event_menu(cell: Vector2i, at: Vector2) -> void:
 		event_menu.add_item("Copy event", 2)
 		event_menu.add_separator()
 		event_menu.add_item("Delete event", 4)
+	event_menu.add_separator()
+	event_menu.add_item("▶ Play from here", 5)
 	event_menu.position = Vector2i(at)
 	event_menu.reset_size()
 	event_menu.popup()
@@ -685,6 +689,7 @@ func _on_event_menu(id: int) -> void:
 	match id:
 		0: _new_event(menu_cell)
 		1: _edit_event(selected_event)
+		5: play_from_here.emit(map_id, menu_cell.x, menu_cell.y)
 		2: event_clipboard = project.get_map_event_xml(map_id, selected_event)
 		3: _paste_event(menu_cell)
 		4: _delete_event(selected_event)

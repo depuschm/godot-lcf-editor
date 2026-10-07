@@ -8,6 +8,8 @@ signal map_activated(map_id: int, map_name: String)
 signal project_opened(project: RefCounted)
 ## Emitted when the user asks for the database.
 signal database_requested
+## Emitted when the user asks to test play the project.
+signal test_play_requested
 
 const SETTINGS_SECTION := "lcf_editor"
 const SETTINGS_KEY := "last_project"
@@ -16,6 +18,7 @@ var project: RefCounted  # LcfProject, created via ClassDB so this script loads 
 var dialog: EditorFileDialog
 var summary: Label
 var database_button: Button
+var play_button: Button
 var tree: Tree
 var details: Label
 
@@ -32,11 +35,21 @@ func _ready() -> void:
 	summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	add_child(summary)
 
+	var row := HBoxContainer.new()
+	add_child(row)
 	database_button = Button.new()
 	database_button.text = "Database"
 	database_button.disabled = true
+	database_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	database_button.pressed.connect(func() -> void: database_requested.emit())
-	add_child(database_button)
+	row.add_child(database_button)
+	play_button = Button.new()
+	play_button.text = "▶ Test Play"
+	play_button.tooltip_text = "Save and run the project in EasyRPG Player"
+	play_button.disabled = true
+	play_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	play_button.pressed.connect(func() -> void: test_play_requested.emit())
+	row.add_child(play_button)
 
 	tree = Tree.new()
 	tree.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -82,8 +95,10 @@ func open_project(path: String) -> void:
 	if project.load(path) != OK:
 		summary.text = "Could not open project:\n" + project.get_last_error()
 		database_button.disabled = true
+		play_button.disabled = true
 		return
 	database_button.disabled = false
+	play_button.disabled = false
 	_settings().set_project_metadata(SETTINGS_SECTION, SETTINGS_KEY, path)
 
 	var title: String = project.get_game_title()

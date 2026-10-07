@@ -71,26 +71,39 @@ jobs:
       - name: Smoke test
         run: |
           "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_load_demo.gd | tee smoke.log
+          if grep -q "SCRIPT ERROR" smoke.log; then echo "::error::Script errors in smoke.log"; exit 1; fi
           echo "::notice title=Smoke test (${{ matrix.name }})::$(grep -cE '^- |^  ' smoke.log) map lines, result: $(tail -n 1 smoke.log)"
 
       - name: Round-trip test (demo)
         run: |
           "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_roundtrip.gd | tee roundtrip.log
+          if grep -q "SCRIPT ERROR" roundtrip.log; then echo "::error::Script errors in roundtrip.log"; exit 1; fi
           echo "::notice title=Round trip demo (${{ matrix.name }})::$(grep -c '  ok ' roundtrip.log) checks ok, result: $(tail -n 1 roundtrip.log)"
 
       - name: Event command tests (demo)
         run: |
           "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_commands.gd | tee commands.log
+          if grep -q "SCRIPT ERROR" commands.log; then echo "::error::Script errors in commands.log"; exit 1; fi
           echo "::notice title=Event commands (${{ matrix.name }})::$(grep -c '  ok ' commands.log) checks ok, result: $(tail -n 1 commands.log)"
 
       - name: Plugin API test
         run: |
           "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_plugin_api.gd | tee plugin.log
+          if grep -q "SCRIPT ERROR" plugin.log; then echo "::error::Script errors in plugin.log"; exit 1; fi
           echo "::notice title=Plugin API (${{ matrix.name }})::$(grep -c '  ok ' plugin.log) checks ok, result: $(tail -n 1 plugin.log)"
+
+      - name: Test Play test
+        run: |
+          # Starts a shell script in place of EasyRPG Player on Linux; on Windows only
+          # the command line and EasyRPG.ini parts run.
+          "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_test_play.gd | tee testplay.log
+          if grep -q "SCRIPT ERROR" testplay.log; then echo "::error::Script errors in testplay.log"; exit 1; fi
+          echo "::notice title=Test Play (${{ matrix.name }})::$(grep -c '  ok ' testplay.log) checks ok, result: $(tail -n 1 testplay.log)"
 
       - name: Event editor test
         run: |
           "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_event_editor.gd | tee events.log
+          if grep -q "SCRIPT ERROR" events.log; then echo "::error::Script errors in events.log"; exit 1; fi
           echo "::notice title=Event editor (${{ matrix.name }})::$(grep -c '  ok ' events.log) checks ok, result: $(tail -n 1 events.log)"
 
       - name: Round-trip test (EasyRPG TestGame)
@@ -101,7 +114,9 @@ jobs:
             # pwd -W gives a Windows path under Git Bash; plain pwd elsewhere.
             dir="$(cd ../TestGame/TestGame-$game && (pwd -W 2>/dev/null || pwd))"
             "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_roundtrip.gd -- "$dir" | tee game.log
+            if grep -q "SCRIPT ERROR" game.log; then echo "::error::Script errors in game.log"; exit 1; fi
             "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_commands.gd -- "$dir" | tee game-commands.log
+            if grep -q "SCRIPT ERROR" game-commands.log; then echo "::error::Script errors in game-commands.log"; exit 1; fi
             echo "::endgroup::"
             echo "::notice title=Round trip TestGame-$game (${{ matrix.name }})::$(grep -c '  ok ' game.log) checks ok, $(grep -c 'note ' game.log) notes, result: $(tail -n 1 game.log)"
             echo "::notice title=Event commands TestGame-$game (${{ matrix.name }})::$(grep 'command lines written' game-commands.log | sed 's/^ *ok *//'), result: $(tail -n 1 game-commands.log)"

@@ -1016,7 +1016,7 @@ int LcfProject::add_map_event(int map_id, int x, int y) {
 	event.ID = lowest_free_event_id(*map);
 	char name[16];
 	std::snprintf(name, sizeof(name), "EV%04d", event.ID);
-	event.name = lcf::DBString(name);
+	event.name = lcf::DBString(std::string_view(name));  // not the whole buffer: DBString(char[N]) takes N - 1 bytes
 	event.x = x;
 	event.y = y;
 	event.pages.push_back(new_page());

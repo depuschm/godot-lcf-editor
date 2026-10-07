@@ -172,6 +172,28 @@ static func schemas(script: GDScript) -> Array:
 		{ "code": 12420, "name": "Game Over", "group": "Flow" },
 		{ "code": 12510, "name": "Return to Title Screen", "group": "Flow" },
 		_conditional_branch(script),
+		# EasyRPG Player's own comment commands (src/dynrpg_easyrpg.cpp). They run when
+		# the game enables EasyRPG extensions ([Patch] EasyRPG=1 in EasyRPG.ini).
+		{
+			"comment": "easyrpg_output", "name": "Log Message", "group": "Other",
+			"runtime": "EasyRPG Player with EasyRPG extensions",
+			"params": [
+				{ "index": 0, "label": "Level", "type": "string", "default": "info",
+					"choices": { "debug": "Debug", "info": "Info", "warning": "Warning", "error": "Error" } },
+				{ "index": 1, "label": "Message", "type": "string" },
+			],
+			"summary": Callable(script, "_summary_output"),
+		},
+		{
+			"comment": "easyrpg_add", "name": "Add Numbers", "group": "Game Progress",
+			"runtime": "EasyRPG Player with EasyRPG extensions",
+			"params": [
+				{ "index": 0, "label": "Store in variable", "type": "variable", "default": 1 },
+				{ "index": 1, "label": "Number", "type": "int", "min": -9999999, "max": 9999999 },
+				{ "index": 2, "label": "Plus", "type": "int", "min": -9999999, "max": 9999999 },
+			],
+			"summary": Callable(script, "_summary_add"),
+		},
 	]
 
 
@@ -372,3 +394,11 @@ static func _summary_number(c: Dictionary, _n: Variant) -> String:
 
 static func _summary_branch(c: Dictionary, n: Variant) -> String:
 	return _condition(c, n)
+
+
+static func _summary_output(c: Dictionary, _n: Variant) -> String:
+	return "[%s] %s" % [String(c.strings.get(0, "")).capitalize(), c.strings.get(1, "")]
+
+
+static func _summary_add(c: Dictionary, n: Variant) -> String:
+	return "%s = %d + %d" % [n.ref("variables", _p(c, 0)), _p(c, 1), _p(c, 2)]

@@ -222,6 +222,9 @@ func _test_events(work: String, backups: String, map_ids: Array[int]) -> void:
 		if event.id == new_id:
 			created = event
 	_check(created.get("name") == "EV%04d" % new_id and created.get("page_count") == 1, "new event is named %s with one page" % created.get("name"))
+	var fresh_xml: String = project.get_map_event_xml(id, new_id)
+	_check(("<name>EV%04d</name>" % new_id) in fresh_xml, "its name has no stray characters")
+	_check(project.set_map_event_xml(id, new_id, fresh_xml) == OK and project.get_map_event_xml(id, new_id) == fresh_xml, "a new event survives an XML round trip unchanged")
 	var message := [
 		{ "code": 10110, "indent": 0, "string": "Hello from Godot", "parameters": PackedInt32Array() },
 		{ "code": 20110, "indent": 0, "string": "second line", "parameters": PackedInt32Array() },

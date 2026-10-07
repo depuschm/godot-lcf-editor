@@ -114,6 +114,11 @@ func _run() -> void:
 	_check(view._event_by_id(copy_id).is_empty(), "copy deleted")
 	view.apply_event(map_id, id, "")
 	_check(view._event_by_id(id).is_empty() and not editor.visible, "undoing the creation removes the event and closes the editor")
+	var play := []
+	view.play_from_here.connect(func(m: int, x: int, y: int) -> void: play.append(Vector3i(m, x, y)))
+	view.menu_cell = Vector2i(5, 6)
+	view._on_event_menu(5)
+	_check(play == [Vector3i(map_id, 5, 6)], "“Play from here” asks to test play from that cell")
 	view.apply_event(map_id, id, edited_xml)
 	_check(project.get_map_event_xml(map_id, id) == edited_xml, "redo restores the edited event exactly")
 	_check(project.save_map(map_id, "") == OK, "map saves")
@@ -225,6 +230,30 @@ func _test_dialogs(project: RefCounted, editor: AcceptDialog, map_id: int, id: i
 	var final: Array = project.get_map_event_commands(map_id, id, 0)
 	_check(final.slice(head).map(func(c): return "%d@%d" % [c.code, c.indent]) == ["12010@0", "10110@1", "20110@1", "10@1", "22011@0"], "message inserted into the branch body, one command per line")
 	_check(count.call() == final.size(), "the list and the project agree")
+
+	# A comment command (runtime extension): EasyRPG's Log Message.
+	_select(cl, cl.commands.size())
+	cl.open_insert()
+	cl.picker.hide()
+	var log_item := _tree_item(cl._picker_tree.get_root(), "Log Message")
+	_check(log_item != null and log_item.get_metadata(0) == "@easyrpg_output", "the picker offers comment commands")
+	log_item.select(0)
+	cl._on_picked()
+	_check(_labels(dialog) == ["Level", "Message"] and "@easyrpg_output" in dialog._hint.text, "its dialog has its fields and says how it is stored")
+	dialog.strings[0] = "warning"
+	dialog.strings[1] = "The chest was opened"
+	dialog.hide()
+	dialog._on_confirmed()
+	var stored: Dictionary = project.get_map_event_commands(map_id, id, 0).back()
+	_check(stored.code == 12410 and stored.string == '@easyrpg_output "warning", "The chest was opened"', "stored as an event comment: %s" % stored.string)
+	_check(cl.list.get_item_text(cl.commands.size() - 1) == "◆Log Message: [Warning] The chest was opened", "and listed as a command")
+	_select(cl, cl.commands.size() - 1)
+	cl.open_edit()
+	_check(dialog.schema.get("comment") == "easyrpg_output" and dialog.strings == { 0: "warning", 1: "The chest was opened" }, "editing it opens its dialog with its values")
+	dialog.strings[1] = "Opened twice"
+	dialog.hide()
+	dialog._on_confirmed()
+	_check(project.get_map_event_commands(map_id, id, 0).back().string == '@easyrpg_output "warning", "Opened twice"', "edits are encoded again")
 
 
 func _select(cl: Control, row: int) -> void:

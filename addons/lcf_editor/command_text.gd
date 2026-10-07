@@ -72,7 +72,7 @@ static func line(project: RefCounted, command: Dictionary, names: LcfCommands.Na
 	if MARKER_NAMES.has(code):
 		var marker: String = pad + ": " + MARKER_NAMES[code]
 		return marker + (" [%s]" % command.string if command.string != "" else "")
-	var schema := LcfCommands.get_schema(code)
+	var schema := LcfCommands.schema_for(command)
 	if not schema.is_empty():
 		if names == null:
 			names = LcfCommands.Names.new(project)

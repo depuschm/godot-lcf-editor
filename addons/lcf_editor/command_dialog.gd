@@ -24,6 +24,9 @@ var _grid: GridContainer
 var _hint: Label
 var _depends := {}  # parameter index -> true if some field's `when` uses it
 var _initial := PackedInt32Array()
+var _initial_strings := {}
+## String arguments of comment commands: { index: text }.
+var strings := {}
 var _initial_text := ""
 
 
@@ -49,8 +52,13 @@ func _init() -> void:
 
 ## Opens the dialog for a command. `p_params` may be shorter than the schema needs;
 ## missing parameters are added as 0 (unknown extra ones are kept).
-func open(p_schema: Dictionary, p_params: PackedInt32Array, p_text: String, p_names: LcfCommands.Names, p_title := "", p_inserting := false) -> void:
+##
+## For comment commands (LcfCommands), `p_strings` holds the string arguments
+## ({ index: text }) and `applied` delivers the encoded comment text.
+func open(p_schema: Dictionary, p_params: PackedInt32Array, p_text: String, p_names: LcfCommands.Names, p_title := "", p_inserting := false, p_strings := {}) -> void:
 	schema = p_schema
+	strings = p_strings.duplicate()
+	_initial_strings = strings.duplicate()
 	inserting = p_inserting
 	names = p_names
 	project = names.project if names else null
@@ -95,6 +103,9 @@ func _build() -> void:
 
 
 func _hint_text(text_def: Dictionary) -> String:
+	if LcfCommands.is_comment_schema(schema):
+		var where: String = " Runs in %s." % schema.runtime if schema.has("runtime") else ""
+		return "Stored as an event comment (@%s …) that RPG Maker keeps as it is.%s" % [schema.comment, where]
 	if text_def.get("kind", "") == "lines":
 		return "Each line of the text is stored as one line of the command (a message box shows four)."
 	return ""
@@ -162,8 +173,10 @@ func _files(folder: String) -> PackedStringArray:
 
 func _param_control(def: Dictionary) -> Control:
 	var index := int(def.index)
-	var value := params[index]
 	var type := String(def.type)
+	if type == "string":
+		return _string_control(index, def)
+	var value := params[index]
 	match type:
 		"bool":
 			var box := CheckBox.new()
@@ -235,15 +248,37 @@ func _set_param(index: int, value: int) -> void:
 	if _depends.has(index):
 		# Fields that appear now start from their defaults, as in a new command.
 		for def: Dictionary in schema.get("params", []):
-			if LcfCommands.is_visible(def, params, _engine()) and def.get("when", {}).has(index) and def.has("default"):
+			if def.type != "string" and LcfCommands.is_visible(def, params, _engine()) and def.get("when", {}).has(index) and def.has("default"):
 				params[int(def.index)] = int(def.default)
 		_build.call_deferred()
 		reset_size.call_deferred()
 
 
+func _string_control(index: int, def: Dictionary) -> Control:
+	var value := String(strings.get(index, def.get("default", "")))
+	strings[index] = value
+	var choices: Dictionary = def.get("choices", {})
+	if not choices.is_empty():
+		var option := OptionButton.new()
+		var keys: Array = choices.keys()
+		for key: String in keys:
+			option.add_item(String(choices[key]))
+		if not value in keys:
+			keys.append(value)
+			option.add_item("%s (not in the list)" % value)
+		option.select(keys.find(value))
+		option.item_selected.connect(func(i: int) -> void: strings[index] = keys[i])
+		return option
+	var line := LineEdit.new()
+	line.text = value
+	line.custom_minimum_size = Vector2(320, 0)
+	line.text_changed.connect(func(t: String) -> void: strings[index] = t)
+	return line
+
+
 ## True if the user changed something since open().
 func is_changed() -> bool:
-	return params != _initial or text != _initial_text
+	return params != _initial or text != _initial_text or strings != _initial_strings
 
 
 func _on_confirmed() -> void:
@@ -253,4 +288,7 @@ func _on_confirmed() -> void:
 	var sync: Variant = schema.get("sync")
 	if sync is Callable and sync.is_valid():
 		result = sync.call(result)
+	if LcfCommands.is_comment_schema(schema):
+		applied.emit(PackedInt32Array(), LcfCommands.encode_comment(schema, result, strings))
+		return
 	applied.emit(result, text)

@@ -203,16 +203,32 @@ func open_edit() -> void:
 		open_insert()
 		return
 	var head := Blocks.head_of(commands, row)
-	var schema := LcfCommands.get_schema(commands[head].code)
+	var schema := LcfCommands.schema_for(commands[head])
 	if schema.is_empty():
 		_open_raw_edit(head)
 		return
 	_editing = head
+	if LcfCommands.is_comment_schema(schema):
+		# The Player joins a comment command with its continuation lines.
+		var text := Blocks.text_of(commands, head, LcfCommands.get_schema(LcfCommands.COMMENT)).replace("\n", "")
+		var decoded := LcfCommands.decode_comment(schema, text)
+		if decoded.ok:
+			dialog.open(schema, decoded.params, "", names, "", false, decoded.strings)
+			return
+		schema = LcfCommands.get_schema(LcfCommands.COMMENT)
 	dialog.open(schema, commands[head].parameters, Blocks.text_of(commands, head, schema), names)
 
 
 func _on_dialog_applied(params: PackedInt32Array, text: String) -> void:
 	var schema := dialog.schema
+	if LcfCommands.is_comment_schema(schema):
+		# Stored as an event comment holding the encoded command (text).
+		var comment := LcfCommands.get_schema(LcfCommands.COMMENT)
+		if _editing >= 0:
+			_emit(Blocks.rebuild(commands, _editing, comment, PackedInt32Array(), text), "Edit %s" % schema.name, _editing)
+		else:
+			_emit(commands.slice(0, _insert.index) + Blocks.build(comment, PackedInt32Array(), text, _insert.indent) + commands.slice(_insert.index), "Insert %s" % schema.name, _insert.index)
+		return
 	if _editing >= 0:
 		_emit(Blocks.rebuild(commands, _editing, schema, params, text), "Edit %s" % schema.name, _editing)
 	else:
@@ -323,7 +339,11 @@ func _fill_picker() -> void:
 			groups[group].set_selectable(0, false)
 		var item := _picker_tree.create_item(groups[group])
 		item.set_text(0, schema.name)
-		item.set_metadata(0, int(schema.code))
+		if LcfCommands.is_comment_schema(schema):
+			item.set_metadata(0, "@" + String(schema.comment))
+			item.set_tooltip_text(0, "Stored as the comment @%s%s" % [schema.comment, " · runs in " + schema.runtime if schema.has("runtime") else ""])
+		else:
+			item.set_metadata(0, int(schema.code))
 		if first == null:
 			first = item
 	# Every other command liblcf knows, edited raw.
@@ -353,7 +373,12 @@ func _on_picked() -> void:
 	var item := _picker_tree.get_selected()
 	if item == null or item.get_metadata(0) == null:
 		return
-	var code: int = item.get_metadata(0)
+	var meta: Variant = item.get_metadata(0)
+	if meta is String:
+		var comment := LcfCommands.get_comment_schema(String(meta).substr(1))
+		dialog.open(comment, LcfCommands.default_params(comment), "", names, "Insert %s" % comment.name, true, LcfCommands.default_strings(comment))
+		return
+	var code: int = meta
 	if code < 0:
 		_open_raw_insert(-code)
 		return

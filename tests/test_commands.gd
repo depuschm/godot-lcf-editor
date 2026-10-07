@@ -31,6 +31,7 @@ func _init() -> void:
 	_check(project.load(dir) == OK, "project loads: " + dir)
 	_test_registry(project)
 	_test_blocks()
+	_test_comment_commands(project)
 	_test_project(project)
 	print("FAILED" if _failures > 0 else "OK")
 	quit(1 if _failures > 0 else 0)
@@ -43,7 +44,7 @@ func _test_registry(project: RefCounted) -> void:
 	var known := {}
 	for code: int in project.get_event_command_codes():
 		known[code] = true
-	var unknown := schemas.filter(func(s: Dictionary) -> bool: return not known.has(int(s.code)))
+	var unknown := schemas.filter(func(s: Dictionary) -> bool: return s.has("code") and not known.has(int(s.code)))
 	_check(unknown.is_empty(), "every built-in schema is a command liblcf knows %s" % [unknown.map(func(s): return s.code)])
 	_check(LcfCommands.get_schemas()[0].group == "Message", "schemas are ordered by group")
 
@@ -114,6 +115,44 @@ func _test_blocks() -> void:
 	var copied := Blocks.copy_units(list, PackedInt32Array([3]))
 	_check(_codes(copied) == ["10110@0"], "copied commands start at indent 0")
 	_check(_codes(Blocks.reindent(Blocks.copy_units(list, PackedInt32Array([2])), 2))[1] == "10110@3", "pasted blocks keep their inner indents")
+
+
+# Comment commands: DynRPG syntax, parsed the way EasyRPG Player parses it.
+func _test_comment_commands(project: RefCounted) -> void:
+	var parsed := LcfCommands.parse_comment('@EasyRPG_Output "info", "Say ""hi"", world"')
+	_check(parsed.name == "easyrpg_output" and parsed.args == ["info", 'Say "hi", world'], "strings with quotes and commas parse like the Player: %s" % [parsed])
+	parsed = LcfCommands.parse_comment("@easyrpg_add  V12 , 3,,Abc")
+	_check(parsed.args == ["v12", "3", "", "abc"], "tokens lose spaces and are lowercased, empty arguments stay: %s" % [parsed.args])
+	_check(LcfCommands.parse_comment("A plain comment").name == "" and LcfCommands.parse_comment("@").name == "", "plain comments are not commands")
+	_check(LcfCommands.parse_comment('@cmd "a" b').name == "", "a token right after a string is rejected, like the Player does")
+
+	var output := LcfCommands.get_comment_schema("easyrpg_output")
+	_check(not output.is_empty() and LcfCommands.is_comment_schema(output), "EasyRPG's Log Message is a built-in comment command")
+	var text := LcfCommands.encode_comment(output, PackedInt32Array([0, 0]), { 0: "warning", 1: 'Door "A"\nis open' })
+	_check(text == '@easyrpg_output "warning", "Door ""A"" is open"', "encoding quotes strings and drops line breaks: %s" % text)
+	var decoded := LcfCommands.decode_comment(output, text)
+	_check(decoded.ok and decoded.strings == { 0: "warning", 1: 'Door "A" is open' }, "and decodes back")
+	var add := LcfCommands.get_comment_schema("easyrpg_add")
+	var sum := LcfCommands.encode_comment(add, PackedInt32Array([5, -3, 10]), {})
+	_check(sum == "@easyrpg_add 5, -3, 10" and LcfCommands.decode_comment(add, sum).params == PackedInt32Array([5, -3, 10]), "numbers are written plainly: %s" % sum)
+	_check(not LcfCommands.decode_comment(add, "@easyrpg_add 5, V12, 1").ok, "a variable token where a number is expected keeps the comment raw")
+
+	var names := LcfCommands.Names.new(project)
+	var comment := _c(12410, 0, text)
+	_check(LcfCommands.schema_for(comment) == output, "schema_for() finds the comment command")
+	_check(LcfCommands.schema_for(_c(12410, 0, "@unknown_cmd 1")).name == "Comment", "unknown comment commands stay comments")
+	_check(CommandText.line(project, comment, names) == '◆Log Message: [Warning] Door "A" is open', "its line reads like a command: %s" % CommandText.line(project, comment, names))
+	_check(CommandText.line(project, _c(12410, 0, "@easyrpg_add 1, V2, 3"), names) == "◆Add Numbers: @easyrpg_add 1, V2, 3", "undecodable arguments show the raw comment")
+
+	# A plugin's comment command.
+	_check(LcfCommands.register({ "comment": "pixel_move", "name": "Move by Pixels", "group": "Map",
+		"params": [{ "index": 0, "label": "Event", "type": "event", "default": 10005 }, { "index": 1, "label": "dx", "type": "int" }, { "index": 2, "label": "dy", "type": "int" }] }),
+		"a plugin registers a comment command")
+	_check(CommandText.line(project, _c(12410, 1, "@pixel_move 10005, 4, -2"), names) == "    ◆Move by Pixels: Event This event, dx 4, dy -2", "it gets a generated line")
+	_check(not LcfCommands.register({ "comment": "Bad Name", "name": "x" }), "comment names must be lowercase identifiers")
+	_check(not LcfCommands.register({ "code": 11060, "name": "x", "params": [{ "index": 0, "type": "string" }] }), "string parameters need a comment command")
+	LcfCommands.unregister_comment("pixel_move")
+	_check(LcfCommands.get_comment_schema("pixel_move").is_empty(), "and unregisters")
 
 
 func _test_project(project: RefCounted) -> void:

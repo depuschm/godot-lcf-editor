@@ -44,6 +44,25 @@ extends RefCounted
 ##
 ## Unknown parameters of a command are kept as they are, so a schema only needs to
 ## describe the parameters it knows.
+##
+## Comment commands (the runtime extension mechanism): instead of `code`, a schema can
+## give `comment`, a command name. The command is then stored as an event comment in
+## DynRPG syntax, `@name arg, "text", ...`, which RPG Maker and every tool keep as an
+## ordinary comment, and which EasyRPG Player executes: commands starting with
+## "easyrpg_" when the game enables EasyRPG extensions, any command in DynRPG mode
+## (where a runtime plugin handles it). Parameters are the arguments by position
+## (`index`); besides the types above they may be "string" (with optional `choices`
+## { value: label }). `runtime` names what executes the command, for the dialog.
+##
+##     LcfCommands.register({
+##         "comment": "easyrpg_output", "name": "Log Message", "group": "Other",
+##         "runtime": "EasyRPG Player with EasyRPG extensions",
+##         "params": [
+##             { "index": 0, "label": "Level", "type": "string", "default": "info",
+##               "choices": { "info": "Info", "warning": "Warning" } },
+##             { "index": 1, "label": "Message", "type": "string" },
+##         ],
+##     })
 
 const GROUPS := ["Message", "Game Progress", "Party", "Map", "Flow", "Sound", "Screen", "Other"]
 const REFERENCES := {
@@ -54,22 +73,49 @@ const REFERENCES := {
 ## Special event IDs RPG Maker uses in commands that target a character.
 const SPECIAL_EVENTS := { 10001: "Hero", 10002: "Boat", 10003: "Ship", 10004: "Airship", 10005: "This event" }
 
+## Event comments hold comment commands; their continuation lines are joined to them.
+const COMMENT := 12410
+const COMMENT_2 := 22410
+
 static var _schemas := {}
+static var _comment_schemas := {}  # command name -> schema
 static var _loaded := false
 
 
-## Adds or replaces the schema for its code. Returns false if it is malformed.
+## Adds or replaces the schema for its code (or comment command name). Returns false
+## if it is malformed.
 static func register(schema: Dictionary) -> bool:
 	_ensure()
-	if int(schema.get("code", 0)) <= 0 or String(schema.get("name", "")) == "":
-		push_error("LcfCommands.register: a schema needs a positive code and a name")
+	return _add(schema)
+
+
+static func _add(schema: Dictionary) -> bool:
+	var comment := String(schema.get("comment", ""))
+	if String(schema.get("name", "")) == "" or (comment == "" and int(schema.get("code", 0)) <= 0):
+		push_error("LcfCommands.register: a schema needs a name and a positive code or a comment command name")
+		return false
+	if comment != "" and not _valid_name(comment):
+		push_error("LcfCommands.register: comment command names use lowercase letters, digits and \"_\" (%s)" % comment)
 		return false
 	for def: Dictionary in schema.get("params", []):
 		if not def.has("index") or not def.has("type"):
 			push_error("LcfCommands.register: every parameter needs an index and a type (%s)" % schema.name)
 			return false
-	_schemas[int(schema.code)] = schema
+		if def.type == "string" and comment == "":
+			push_error("LcfCommands.register: \"string\" parameters only exist in comment commands (%s)" % schema.name)
+			return false
+	if comment != "":
+		_comment_schemas[comment] = schema
+	else:
+		_schemas[int(schema.code)] = schema
 	return true
+
+
+static func _valid_name(name: String) -> bool:
+	for c in name:
+		if not (c >= "a" and c <= "z") and not (c >= "0" and c <= "9") and c != "_":
+			return false
+	return name != ""
 
 
 ## Removes a schema (e.g. when a plugin is disabled). Built-in schemas come back with
@@ -77,6 +123,32 @@ static func register(schema: Dictionary) -> bool:
 static func unregister(code: int) -> void:
 	_ensure()
 	_schemas.erase(code)
+
+
+static func unregister_comment(name: String) -> void:
+	_ensure()
+	_comment_schemas.erase(name)
+
+
+## The schema of a comment command by name, or {}.
+static func get_comment_schema(name: String) -> Dictionary:
+	_ensure()
+	return _comment_schemas.get(name.to_lower(), {})
+
+
+## The schema that describes a command: a comment command's schema if the command is
+## a comment of one, otherwise the schema of its code (or {}).
+static func schema_for(command: Dictionary) -> Dictionary:
+	_ensure()
+	if int(command.code) == COMMENT and String(command.string).begins_with("@"):
+		var found := get_comment_schema(String(parse_comment(command.string).name))
+		if not found.is_empty():
+			return found
+	return _schemas.get(int(command.code), {})
+
+
+static func is_comment_schema(schema: Dictionary) -> bool:
+	return schema.has("comment")
 
 
 static func reset_builtins() -> void:
@@ -88,6 +160,7 @@ static func reset_builtins() -> void:
 ## editor plugin calls this when it exits.
 static func clear() -> void:
 	_schemas.clear()
+	_comment_schemas.clear()
 	_loaded = false
 
 
@@ -99,7 +172,7 @@ static func get_schema(code: int) -> Dictionary:
 ## All schemas, by group (in GROUPS order, unknown groups last) and name.
 static func get_schemas() -> Array:
 	_ensure()
-	var list := _schemas.values()
+	var list := _schemas.values() + _comment_schemas.values()
 	list.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		var ga := _group_rank(a)
 		var gb := _group_rank(b)
@@ -118,7 +191,152 @@ static func _ensure() -> void:
 	_loaded = true
 	var builtins: GDScript = load("res://addons/lcf_editor/builtin_commands.gd")
 	for schema: Dictionary in builtins.schemas(builtins):
-		_schemas[int(schema.code)] = schema
+		_add(schema)
+
+
+# --- comment commands (DynRPG syntax) ----------------------------------------------
+
+## Parses "@name a, "b", 3" like EasyRPG Player does: { name, args: Array[String] }.
+## Strings are in quotes ("" is a quote); other arguments are tokens with spaces
+## removed and lowercased. Not a command: { name: "", args: [] }.
+static func parse_comment(text: String) -> Dictionary:
+	var none := { "name": "", "args": [] }
+	if not text.begins_with("@"):
+		return none
+	var args: Array[String] = []
+	var name := ""
+	var token := ""
+	var mode := "function"  # function, wait_arg, token, string, wait_comma
+	var i := 1
+	while i <= text.length():
+		if i == text.length():
+			match mode:
+				"function":
+					name = token.to_lower()
+				"wait_arg":
+					if not args.is_empty():
+						args.append("")
+				"string":
+					args.append(token)
+				"token":
+					args.append(token.to_lower())
+			break
+		var c := text[i]
+		if c == " ":
+			match mode:
+				"function":
+					name = token.to_lower()
+					token = ""
+					mode = "wait_arg"
+				"string":
+					token += c
+		elif c == ",":
+			match mode:
+				"function":
+					name = token.to_lower()
+					token = ""
+					args.append("")
+					mode = "wait_arg"
+				"wait_comma":
+					mode = "wait_arg"
+				"wait_arg":
+					args.append("")
+				"string":
+					token += c
+				"token":
+					args.append(token.to_lower())
+					token = ""
+					mode = "wait_arg"
+		else:
+			match mode:
+				"function", "token":
+					token += c
+				"wait_comma":
+					return none
+				"wait_arg":
+					if c == "\"":
+						mode = "string"
+					else:
+						mode = "token"
+						token += c
+				"string":
+					if c == "\"":
+						if i + 1 < text.length() and text[i + 1] == "\"":
+							token += "\""
+							i += 1
+						else:
+							args.append(token)
+							token = ""
+							mode = "wait_comma"
+					else:
+						token += c
+		i += 1
+	if name == "":
+		return none
+	return { "name": name, "args": args }
+
+
+## The comment text for a comment command: "@name 3, "text"". Strings are quoted (with
+## "" for a quote; line breaks become spaces), everything else is written as a number.
+static func encode_comment(schema: Dictionary, params: PackedInt32Array, strings: Dictionary) -> String:
+	var count := 0
+	for def: Dictionary in schema.get("params", []):
+		count = maxi(count, int(def.index) + 1)
+	var args := PackedStringArray()
+	for index in count:
+		var def := _def_at(schema, index, params)
+		if not def.is_empty() and def.type == "string":
+			var text := String(strings.get(index, "")).replace("\r", "").replace("\n", " ")
+			args.append("\"" + text.replace("\"", "\"\"") + "\"")
+		else:
+			args.append(str(params[index] if index < params.size() else 0))
+	return "@" + String(schema.comment) + (" " + ", ".join(args) if not args.is_empty() else "")
+
+
+## Splits a comment command's text into the schema's values: { ok, params, strings }.
+## `ok` is false when an argument does not fit (e.g. a variable token like V12 where a
+## number is expected); the editor then shows the comment as it is.
+static func decode_comment(schema: Dictionary, text: String) -> Dictionary:
+	var parsed := parse_comment(text)
+	var params := PackedInt32Array()
+	var strings := {}
+	var count := 0
+	for def: Dictionary in schema.get("params", []):
+		count = maxi(count, int(def.index) + 1)
+	params.resize(count)
+	params.fill(0)
+	var ok: bool = parsed.name == String(schema.get("comment", "")) and parsed.args.size() <= count
+	for index in parsed.args.size():
+		if not ok:
+			break
+		var arg: String = parsed.args[index]
+		var def := _def_at(schema, index, params)
+		if not def.is_empty() and def.type == "string":
+			strings[index] = arg
+		elif arg.is_valid_int():
+			params[index] = int(arg)
+		elif arg == "":
+			params[index] = 0
+		else:
+			ok = false
+	return { "ok": ok, "params": params, "strings": strings }
+
+
+## The field for an argument position that applies to the given values.
+static func _def_at(schema: Dictionary, index: int, params: PackedInt32Array) -> Dictionary:
+	for def: Dictionary in schema.get("params", []):
+		if int(def.index) == index and is_visible(def, params):
+			return def
+	return {}
+
+
+## Default string values of a comment command's string fields: { index: text }.
+static func default_strings(schema: Dictionary) -> Dictionary:
+	var out := {}
+	for def: Dictionary in schema.get("params", []):
+		if def.type == "string":
+			out[int(def.index)] = String(def.get("default", ""))
+	return out
 
 
 # --- working with schemas --------------------------------------------------------
@@ -159,7 +377,7 @@ static func default_params(schema: Dictionary, engine := "") -> PackedInt32Array
 	params.fill(0)
 	# Defaults of the fields shown for the defaults chosen so far, in order.
 	for def: Dictionary in schema.get("params", []):
-		if int(def.index) < size and is_visible(def, params, engine) and def.has("default"):
+		if int(def.index) < size and is_visible(def, params, engine) and def.has("default") and def.type != "string":
 			params[int(def.index)] = int(def.default)
 	return params
 
@@ -191,7 +409,18 @@ static func format_value(def: Dictionary, value: int, names: Names) -> String:
 
 
 ## The text after "◆Name: " in the command list.
+## For comment commands, summary callables get the decoded arguments: `parameters`
+## (numbers) and `strings` ({ index: text }).
 static func summary(schema: Dictionary, command: Dictionary, names: Names) -> String:
+	var strings := {}
+	if is_comment_schema(schema):
+		var decoded := decode_comment(schema, command.string)
+		if not decoded.ok:
+			return command.string
+		command = command.duplicate()
+		command.parameters = decoded.params
+		command.strings = decoded.strings
+		strings = decoded.strings
 	var custom: Variant = schema.get("summary")
 	if custom is Callable and custom.is_valid():
 		return custom.call(command, names)
@@ -200,8 +429,13 @@ static func summary(schema: Dictionary, command: Dictionary, names: Names) -> St
 	if not text.is_empty() and command.string != "":
 		parts.append(command.string)
 	for def: Dictionary in visible_params(schema, command.parameters, names.engine if names else ""):
-		if int(def.index) < command.parameters.size():
-			parts.append("%s %s" % [def.get("label", "?"), format_value(def, command.parameters[int(def.index)], names)])
+		var index := int(def.index)
+		if def.type == "string":
+			var value := String(strings.get(index, ""))
+			var label: String = def.get("choices", {}).get(value, "“%s”" % value)
+			parts.append("%s %s" % [def.get("label", "?"), label])
+		elif index < command.parameters.size():
+			parts.append("%s %s" % [def.get("label", "?"), format_value(def, command.parameters[index], names)])
 	return ", ".join(parts)
 
 

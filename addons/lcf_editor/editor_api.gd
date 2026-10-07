@@ -143,6 +143,13 @@ func get_selected_event() -> int:
 	return _map_view.selected_event if _map_view else -1
 
 
+## Saves the project and runs it in EasyRPG Player (Test Play); with a map ID, a new
+## game starts on that map at (x, y).
+func start_test_play(map_id := 0, x := 0, y := 0) -> void:
+	if _plugin and _plugin.has_method("start_test_play"):
+		_plugin.start_test_play({ "map_id": map_id, "x": x, "y": y } if map_id > 0 else {})
+
+
 ## Opens the event editor on an event of the open map.
 func edit_event(event_id: int) -> void:
 	if _map_view:

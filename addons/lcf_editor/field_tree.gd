@@ -196,11 +196,12 @@ func _add_command(parent: TreeItem, command: Dictionary) -> void:
 		params.append(int(part))
 	var code := int(values.get("code", "0"))
 	var line := CommandText.describe(project, code, values.get("string", ""), params)
-	var schema := LcfCommands.get_schema(code)
+	var full := { "code": code, "indent": int(values.get("indent", "0")), "string": values.get("string", ""), "parameters": params }
+	var schema := LcfCommands.schema_for(full)
 	if not schema.is_empty():
 		if _names == null:
 			_names = LcfCommands.Names.new(project)
-		var full := { "code": code, "indent": int(values.get("indent", "0")), "string": values.get("string", ""), "parameters": params }
+		line.name = schema.name
 		line.detail = LcfCommands.summary(schema, full, _names)
 	var item := create_item(parent)
 	item.set_text(0, "  ".repeat(int(values.get("indent", "0"))) + line.name)
