@@ -6,6 +6,8 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+  release:
+    types: [published]
 
 env:
   GODOT_VERSION: 4.5.1
@@ -98,7 +100,8 @@ jobs:
           path: addons/lcf_editor
 
   release:
-    # Runs for version tags (v0.1.0, ...): one addon zip with Windows and Linux binaries.
+    # Runs for version tags (v0.1.0, ...) and for releases published on GitHub:
+    # one addon zip with Windows and Linux binaries, attached to the release.
     name: Release
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
@@ -118,9 +121,14 @@ jobs:
           ls -l addons/lcf_editor/bin
           zip -r "lcf_editor-${GITHUB_REF_NAME}.zip" addons
 
-      - name: Create release
+      - name: Create release or attach to it
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" "lcf_editor-${GITHUB_REF_NAME}.zip" \
-            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes --prerelease
+          zip="lcf_editor-${GITHUB_REF_NAME}.zip"
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$zip" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$zip" \
+              --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes --prerelease
+          fi
