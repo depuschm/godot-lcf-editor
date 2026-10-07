@@ -52,5 +52,11 @@ for exe in build/Release/easyrpg-player.exe build/easyrpg-player.exe build/easyr
 		exit 0
 	fi
 done
-echo "build.sh: the built easyrpg-player was not found" >&2
+exe="$(find build -name 'easyrpg-player.exe' -o -name 'easyrpg-player' -type f | grep -v CMakeFiles | head -n 1)"
+if [ -n "$exe" ]; then
+	echo "$WORK/Player/$exe"
+	exit 0
+fi
+echo "build.sh: the built easyrpg-player was not found; executables in build:" >&2
+find build -name '*.exe' -not -path '*CMakeFiles*' >&2
 exit 1

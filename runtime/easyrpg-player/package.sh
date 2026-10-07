@@ -19,9 +19,10 @@ BASE=$(sed -n 's/^BASE=//p' "$HERE/build.sh")
 LIBLCF=$(sed -n 's/^LIBLCF=//p' "$HERE/build.sh")
 
 case "$(uname -s)" in
-	MINGW*|MSYS*|CYGWIN*) PLATFORM=windows-x64; EXE="$PLAYER/build/Release/easyrpg-player.exe" ;;
-	*) PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"; EXE="$PLAYER/build/easyrpg-player" ;;
+	MINGW*|MSYS*|CYGWIN*) PLATFORM=windows-x64; NAME=easyrpg-player.exe ;;
+	*) PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"; NAME=easyrpg-player ;;
 esac
+EXE="$(find "$PLAYER/build" -name "$NAME" -type f -not -path '*CMakeFiles*' | head -n 1)"
 
 STAGE="$OUT/stage-$PLATFORM"
 rm -rf "$STAGE"
