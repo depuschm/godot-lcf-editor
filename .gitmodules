@@ -1,0 +1,7 @@
+[submodule "thirdparty/liblcf"]
+	path = thirdparty/liblcf
+	url = https://github.com/EasyRPG/liblcf
+[submodule "thirdparty/godot-cpp"]
+	path = thirdparty/godot-cpp
+	url = https://github.com/godotengine/godot-cpp
+	branch = 4.5

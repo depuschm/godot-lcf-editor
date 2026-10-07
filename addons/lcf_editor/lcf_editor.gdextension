@@ -1,0 +1,15 @@
+[configuration]
+
+entry_symbol = "lcf_editor_library_init"
+compatibility_minimum = "4.5"
+
+[libraries]
+
+windows.debug.x86_64 = "res://addons/lcf_editor/bin/liblcf_editor.windows.template_debug.x86_64.dll"
+windows.release.x86_64 = "res://addons/lcf_editor/bin/liblcf_editor.windows.template_release.x86_64.dll"
+linux.debug.x86_64 = "res://addons/lcf_editor/bin/liblcf_editor.linux.template_debug.x86_64.so"
+linux.release.x86_64 = "res://addons/lcf_editor/bin/liblcf_editor.linux.template_release.x86_64.so"
+linux.debug.arm64 = "res://addons/lcf_editor/bin/liblcf_editor.linux.template_debug.arm64.so"
+linux.release.arm64 = "res://addons/lcf_editor/bin/liblcf_editor.linux.template_release.arm64.so"
+macos.debug = "res://addons/lcf_editor/bin/liblcf_editor.macos.template_debug.universal.dylib"
+macos.release = "res://addons/lcf_editor/bin/liblcf_editor.macos.template_release.universal.dylib"

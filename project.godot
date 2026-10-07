@@ -1,0 +1,14 @@
+; Engine configuration file.
+; Open this folder in Godot 4.5 or newer.
+
+config_version=5
+
+[application]
+
+config/name="godot-lcf-editor"
+config/description="Godot editor for RPG Maker 2000/2003 projects (LCF format), built on liblcf."
+config/features=PackedStringArray("4.5")
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/lcf_editor/plugin.cfg")

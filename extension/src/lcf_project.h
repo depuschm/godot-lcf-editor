@@ -1,0 +1,64 @@
+#pragma once
+
+#include <godot_cpp/classes/ref_counted.hpp>
+#include <godot_cpp/variant/array.hpp>
+#include <godot_cpp/variant/dictionary.hpp>
+#include <godot_cpp/variant/string.hpp>
+
+#include <filesystem>
+#include <memory>
+#include <string>
+
+namespace lcf::rpg {
+class Database;
+class TreeMap;
+} // namespace lcf::rpg
+
+namespace godot {
+
+// An RPG Maker 2000/2003 project (RPG_RT.ldb, RPG_RT.lmt, Map####.lmu, RPG_RT.ini),
+// loaded through liblcf. All strings handed to Godot are UTF-8.
+class LcfProject : public RefCounted {
+	GDCLASS(LcfProject, RefCounted)
+
+public:
+	LcfProject();
+	~LcfProject() override;
+
+	// Loads the project in `project_dir` (absolute path or res://, user:// path).
+	Error load(const String &project_dir);
+	bool is_loaded() const;
+	String get_last_error() const;
+
+	String get_project_dir() const;
+	String get_game_title() const;
+	String get_encoding() const;
+	String get_engine() const; // "2000" or "2003"
+
+	// One Dictionary per map tree entry, in editor tree order:
+	// { id, name, parent_id, indentation, type ("root" | "map" | "area") }
+	Array get_map_tree() const;
+
+	// Entry counts per database section, e.g. { actors: 8, items: 40, ... }.
+	Dictionary get_database_summary() const;
+
+	// Basic facts about one map (loads Map####.lmu on demand):
+	// { id, width, height, chipset_id, event_count }. Empty on error.
+	Dictionary get_map_info(int map_id);
+
+protected:
+	static void _bind_methods();
+
+private:
+	Error fail(const String &message);
+	std::filesystem::path find_file(const std::string &name) const;
+
+	std::filesystem::path dir;
+	std::string encoding;
+	std::string game_title;
+	std::unique_ptr<lcf::rpg::Database> db;
+	std::unique_ptr<lcf::rpg::TreeMap> tree;
+	String last_error;
+};
+
+} // namespace godot

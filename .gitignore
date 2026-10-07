@@ -1,0 +1,33 @@
+# Godot
+.godot/
+*.import
+export_presets.cfg
+
+# Build output
+build/
+build-*/
+addons/lcf_editor/bin/
+*.o
+*.obj
+*.so
+*.dll
+*.dylib
+*.lib
+*.a
+*.exp
+*.pdb
+
+# IDEs / OS
+.vscode/
+.idea/
+.vs/
+*.swp
+.DS_Store
+Thumbs.db
+
+# LaTeX
+docs/*.aux
+docs/*.log
+docs/*.out
+docs/*.toc
+docs/*.pdf
