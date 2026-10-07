@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.17)
 project(lcf_editor_tools LANGUAGES CXX)
 
 # Helper programs for development; not part of the Godot addon.
+# make_demo_project shares the tile rules with the extension (extension/src/tile_rules.h).
 
 file(WRITE "${CMAKE_BINARY_DIR}/.gdignore" "")
 
@@ -16,4 +17,5 @@ add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/liblcf" liblcf EXCLU
 
 add_executable(make_demo_project make_demo_project.cpp)
 target_link_libraries(make_demo_project PRIVATE lcf)
+target_include_directories(make_demo_project PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../extension/src")
 set_target_properties(make_demo_project PROPERTIES CXX_STANDARD 17 CXX_EXTENSIONS OFF)

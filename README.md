@@ -2,7 +2,7 @@
 
 Godot editor for RPG Maker 2000/2003 projects (LCF format), built on [liblcf](https://github.com/EasyRPG/liblcf). Extensible through plugins, playtested with [EasyRPG Player](https://github.com/EasyRPG/Player).
 
-> **Status: early prototype.** The editor plugin opens an existing RPG Maker 2000/2003 project and shows its map tree and database overview inside Godot. Editing comes next — see the [roadmap](#roadmap).
+> **Status: early prototype.** The editor plugin opens an existing RPG Maker 2000/2003 project, shows its map tree and database overview, and renders its maps inside Godot. Editing comes next — see the [roadmap](#roadmap).
 
 ## Vision
 
@@ -22,22 +22,28 @@ The full vision, the existing landscape and the options considered are in [`docs
 
 ## What works today
 
-<img src="docs/images/editor-dock.png" alt="The LCF Project dock in the Godot editor, showing the demo project's summary, its map tree with the Town map selected, and that map's size, chipset and event count." width="300" align="right">
+![The Godot editor with the LCF Project dock on the left showing the demo project and its map tree, and the RPG Map screen rendering the World map: grass, a lake with shoreline, dirt roads, a stone plaza, trees and an event marker.](docs/images/editor-map.png)
 
 - Open an RPG Maker 2000 or 2003 project folder from the **LCF Project** dock.
 - Detects engine version (2000/2003) and text encoding (from `RPG_RT.ini` or by analysing the database).
-- Shows the map tree, including areas, and basic facts per map (size, chipset, event count).
-- Exposes the project to GDScript through the `LcfProject` class:
+- Shows the map tree, including areas, and basic facts per map.
+- Selecting a map opens it in the **RPG Map** screen (next to 2D, 3D and Script): lower and upper layer with the project's chipset, including ground autotiles, water with shores and deep-water edges, and event markers. Zoom with the mouse wheel, pan with the middle or right mouse button; the status line shows the tile IDs under the cursor.
+- Chipsets in PNG, BMP and RPG Maker's XYZ format, with palette colour 0 transparent as in RPG Maker.
+- Exposes everything to GDScript through `LcfProject` and `LcfChipset`:
 
 ```gdscript
 var project := LcfProject.new()
 if project.load("C:/Games/MyRpg") == OK:
-    print(project.get_game_title(), " (RPG Maker ", project.get_engine(), ")")
-    for entry in project.get_map_tree():
-        print(entry.name, " ", entry.type)
+    var map := project.get_map(1)  # width, height, lower, upper, events, chipset_id
+    var file := project.find_image("ChipSet", project.get_chipset(map.chipset_id).file)
+    var chipset := LcfChipset.new()
+    if chipset.load(file) == OK:
+        var tile: Image = chipset.render_tile(map.lower[0])
 ```
 
-<br clear="right">
+The autotile and water composition (`extension/src/tile_rules.h`) is our own implementation of the chipset format; it was checked against EasyRPG Player's reference tables for every ground autotile, water combination and animation frame.
+
+**Not yet:** RTP graphics (chipsets must be inside the project), tile animation, editing.
 
 ## Repository layout
 
@@ -47,9 +53,9 @@ addons/lcf_editor/         Editor plugin (GDScript) + the GDExtension's binaries
 extension/                 C++ GDExtension wrapping liblcf (CMake)
 thirdparty/liblcf/         git submodule – RPG Maker 2000/2003 file formats
 thirdparty/godot-cpp/      git submodule – Godot C++ bindings
-demo/                      Tiny generated test project (no RPG Maker assets)
-tests/                     Headless smoke test
-tools/                     Helper programs (demo project generator)
+demo/                      Tiny generated test project with its own chipset (no RPG Maker assets)
+tests/                     Headless smoke test and a map-to-PNG renderer
+tools/                     Demo generators: chipset (Python), maps from text grids (C++)
 docs/                      Vision document and README images
 ```
 
@@ -83,11 +89,20 @@ It loads `demo/` through the extension and prints the map tree. Tested with Godo
 
 In a fresh checkout, run `godot --headless --path . --import` once first. That very first headless import can abort while Godot registers the extension (godot-cpp's own example does the same); simply run it again.
 
-### Regenerating the demo project
+### Rendering a map to PNG
 
 ```bash
+godot --headless --path . --script res://tests/render_map.gd -- res://demo 1 map.png
+```
+
+### Regenerating the demo project
+
+The demo chipset is drawn by a script (needs Pillow), and the maps are painted from the text grids in `tools/demo_maps/` (legend at the top of `tools/make_demo_project.cpp`):
+
+```bash
+python3 tools/make_demo_chipset.py demo/ChipSet/Demo.png
 cmake -S tools -B build-tools && cmake --build build-tools
-./build-tools/make_demo_project demo
+./build-tools/make_demo_project demo tools/demo_maps
 ```
 
 ## Roadmap
@@ -96,7 +111,7 @@ cmake -S tools -B build-tools && cmake --build build-tools
 |---|---|
 | M0 | Evaluate EasyRPG Editor; contact the EasyRPG team about a plugin API |
 | M1 | liblcf in Godot: load a project ✅ |
-| M2 | Map view with correct chipsets and autotiles |
+| M2 | Map view with correct chipsets and autotiles ✅ |
 | M3 | Database viewer and editor |
 | M4 | Event editor with data-driven command dialogs |
 | M5 | Plugin API for the editor |

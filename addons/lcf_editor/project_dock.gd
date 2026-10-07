@@ -2,6 +2,9 @@
 extends VBoxContainer
 ## Dock that opens an RPG Maker 2000/2003 project and shows its map tree.
 
+## Emitted when the user selects a map (not the project root or an area).
+signal map_activated(map_id: int, map_name: String)
+
 const SETTINGS_SECTION := "lcf_editor"
 const SETTINGS_KEY := "last_project"
 
@@ -109,3 +112,4 @@ func _on_map_selected() -> void:
 	details.text = "Map%04d · %d×%d tiles · chipset %d · %d events" % [
 		entry.id, info.width, info.height, info.chipset_id, info.event_count,
 	]
+	map_activated.emit(entry.id, entry.name)

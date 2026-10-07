@@ -4,6 +4,7 @@
 #include <godot_cpp/core/defs.hpp>
 #include <godot_cpp/godot.hpp>
 
+#include "lcf_chipset.h"
 #include "lcf_project.h"
 
 using namespace godot;
@@ -13,6 +14,7 @@ static void initialize_lcf_module(ModuleInitializationLevel p_level) {
 		return;
 	}
 	GDREGISTER_CLASS(LcfProject);
+	GDREGISTER_CLASS(LcfChipset);
 }
 
 static void uninitialize_lcf_module(ModuleInitializationLevel p_level) {

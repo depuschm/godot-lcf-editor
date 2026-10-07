@@ -232,22 +232,30 @@ Dictionary LcfProject::get_database_summary() const {
 	return summary;
 }
 
-Dictionary LcfProject::get_map_info(int map_id) {
-	Dictionary info;
+std::unique_ptr<lcf::rpg::Map> LcfProject::load_map(int map_id) {
 	if (!is_loaded()) {
-		return info;
+		last_error = "No project loaded";
+		return nullptr;
 	}
 	char name[16];
 	std::snprintf(name, sizeof(name), "Map%04d.lmu", map_id);
 	const fs::path path = find_file(name);
 	if (path.empty()) {
 		last_error = String("Map file not found: ") + name;
-		return info;
+		return nullptr;
 	}
 	std::ifstream in(path, std::ios::binary);
 	auto map = lcf::LMU_Reader::Load(in, encoding);
 	if (!map) {
 		last_error = "Could not read " + to_godot(path.u8string());
+	}
+	return map;
+}
+
+Dictionary LcfProject::get_map_info(int map_id) {
+	Dictionary info;
+	auto map = load_map(map_id);
+	if (!map) {
 		return info;
 	}
 	info["id"] = map_id;
@@ -256,6 +264,93 @@ Dictionary LcfProject::get_map_info(int map_id) {
 	info["chipset_id"] = map->chipset_id;
 	info["event_count"] = static_cast<int64_t>(map->events.size());
 	return info;
+}
+
+Dictionary LcfProject::get_map(int map_id) {
+	Dictionary result;
+	auto map = load_map(map_id);
+	if (!map) {
+		return result;
+	}
+	const int64_t cells = static_cast<int64_t>(map->width) * map->height;
+	auto layer = [cells](const std::vector<int16_t> &tiles) {
+		PackedInt32Array out;
+		out.resize(cells);
+		for (int64_t i = 0; i < cells; ++i) {
+			out.set(i, i < static_cast<int64_t>(tiles.size()) ? tiles[i] : 0);
+		}
+		return out;
+	};
+	Array events;
+	for (const auto &event : map->events) {
+		Dictionary e;
+		e["id"] = event.ID;
+		e["name"] = to_godot(lcf::ToString(event.name));
+		e["x"] = event.x;
+		e["y"] = event.y;
+		e["page_count"] = static_cast<int64_t>(event.pages.size());
+		events.push_back(e);
+	}
+	result["id"] = map_id;
+	result["width"] = map->width;
+	result["height"] = map->height;
+	result["chipset_id"] = map->chipset_id;
+	result["lower"] = layer(map->lower_layer);
+	result["upper"] = layer(map->upper_layer);
+	result["events"] = events;
+	return result;
+}
+
+Dictionary LcfProject::get_chipset(int chipset_id) const {
+	Dictionary result;
+	if (!db) {
+		return result;
+	}
+	for (const auto &chipset : db->chipsets) {
+		if (chipset.ID == chipset_id) {
+			result["id"] = chipset.ID;
+			result["name"] = to_godot(lcf::ToString(chipset.name));
+			result["file"] = to_godot(lcf::ToString(chipset.chipset_name));
+			result["animation_type"] = chipset.animation_type;
+			result["animation_speed"] = chipset.animation_speed;
+			break;
+		}
+	}
+	return result;
+}
+
+String LcfProject::find_image(const String &folder, const String &name) const {
+	if (name.is_empty() || dir.empty()) {
+		return String();
+	}
+	std::error_code ec;
+	fs::path sub;
+	const std::string wanted_folder = lower(folder.utf8().get_data());
+	for (const auto &entry : fs::directory_iterator(dir, ec)) {
+		if (entry.is_directory(ec) && lower(entry.path().filename().u8string()) == wanted_folder) {
+			sub = entry.path();
+			break;
+		}
+	}
+	if (sub.empty()) {
+		return String();
+	}
+	const std::string wanted = lower(name.utf8().get_data());
+	fs::path found;
+	int best = 99;
+	for (const auto &entry : fs::directory_iterator(sub, ec)) {
+		const fs::path &p = entry.path();
+		if (lower(p.stem().u8string()) != wanted) {
+			continue;
+		}
+		const std::string ext = lower(p.extension().u8string());
+		const int rank = ext == ".png" ? 0 : ext == ".bmp" ? 1 : ext == ".xyz" ? 2 : 99;
+		if (rank < best) {
+			best = rank;
+			found = p;
+		}
+	}
+	return found.empty() ? String() : to_godot(found.u8string());
 }
 
 void LcfProject::_bind_methods() {
@@ -269,4 +364,7 @@ void LcfProject::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_map_tree"), &LcfProject::get_map_tree);
 	ClassDB::bind_method(D_METHOD("get_database_summary"), &LcfProject::get_database_summary);
 	ClassDB::bind_method(D_METHOD("get_map_info", "map_id"), &LcfProject::get_map_info);
+	ClassDB::bind_method(D_METHOD("get_map", "map_id"), &LcfProject::get_map);
+	ClassDB::bind_method(D_METHOD("get_chipset", "chipset_id"), &LcfProject::get_chipset);
+	ClassDB::bind_method(D_METHOD("find_image", "folder", "name"), &LcfProject::find_image);
 }

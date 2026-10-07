@@ -32,6 +32,7 @@ get_target_property(GODOTCPP_SUFFIX godot-cpp GODOTCPP_SUFFIX)
 add_library(lcf_editor SHARED
     src/register_types.cpp
     src/lcf_project.cpp
+    src/lcf_chipset.cpp
 )
 target_link_libraries(lcf_editor PRIVATE godot-cpp lcf)
 

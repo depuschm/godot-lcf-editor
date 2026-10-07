@@ -2,6 +2,15 @@ extends SceneTree
 ## Smoke test: loads the demo project through the extension.
 ## Run: godot --headless --path . --script res://tests/test_load_demo.gd
 
+var _failures := 0
+
+
+func _check(ok: bool, what: String) -> void:
+	if not ok:
+		printerr("FAIL: ", what)
+		_failures += 1
+
+
 func _init() -> void:
 	var failed := false
 	if not ClassDB.class_exists("LcfProject"):
@@ -33,5 +42,29 @@ func _init() -> void:
 	if project.get_game_title() != "LCF Editor Demo":
 		printerr("FAIL: unexpected game title")
 		failed = true
+
+	# Map layers and events
+	var map: Dictionary = project.get_map(1)
+	var lower: PackedInt32Array = map.get("lower", PackedInt32Array())
+	_check(map.get("width") == 40 and map.get("height") == 30, "map 1 is 40x30")
+	_check(lower.size() == 40 * 30, "lower layer has one tile per cell")
+	_check(Array(lower).any(func(id: int) -> bool: return id < 1000), "map 1 contains water")
+	_check(Array(lower).any(func(id: int) -> bool: return id >= 4050 and id < 4100), "map 1 contains the dirt path autotile")
+	_check(map.get("events", []).size() == 1 and map.events[0].name == "Sign", "map 1 has the sign event")
+
+	# Chipset loading and tile composition
+	var info: Dictionary = project.get_chipset(map.get("chipset_id", 0))
+	var file: String = project.find_image("ChipSet", info.get("file", ""))
+	_check(file.ends_with("Demo.png"), "chipset image is found")
+	var chipset: RefCounted = ClassDB.instantiate("LcfChipset")
+	_check(chipset.load(file) == OK, "chipset loads")
+	if chipset.get_image():
+		_check(chipset.get_image().get_size() == Vector2i(480, 256), "chipset is 480x256")
+		_check(chipset.render_tile(10000).get_pixel(8, 8).a == 0.0, "upper tile 0 is transparent")
+		_check(chipset.render_tile(5000).get_pixel(8, 8).a == 1.0, "lower tile 0 is opaque")
+		var atlas: Dictionary = chipset.build_atlas(lower)
+		_check(Array(lower).all(func(id: int) -> bool: return atlas.coords.has(id)), "atlas covers every tile of the map")
+
+	failed = failed or _failures > 0
 	print("FAILED" if failed else "OK")
 	quit(1 if failed else 0)
