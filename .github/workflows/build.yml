@@ -127,11 +127,12 @@ jobs:
 
       - name: Restore EasyRPG Player libraries (Windows)
         if: runner.os == 'Windows'
+        id: vcpkg-cache
         uses: actions/cache/restore@v4
         with:
           path: vcpkg-cache
-          key: vcpkg-${{ runner.os }}-${{ hashFiles('.github/workflows/build.yml') }}
-          restore-keys: vcpkg-${{ runner.os }}-
+          # Change the number when the list of libraries below changes
+          key: vcpkg-${{ runner.os }}-1
 
       - name: Install EasyRPG Player libraries (Windows)
         if: runner.os == 'Windows'
@@ -145,13 +146,14 @@ jobs:
 
       - name: Save EasyRPG Player libraries (Windows)
         # Right away, so a failing Player build does not lose them
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && steps.vcpkg-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: vcpkg-cache
-          key: vcpkg-${{ runner.os }}-${{ hashFiles('.github/workflows/build.yml') }}-${{ github.run_id }}
+          key: vcpkg-${{ runner.os }}-1
 
       - name: Restore patched EasyRPG Player build
+        id: player-cache
         uses: actions/cache/restore@v4
         with:
           path: runtime/easyrpg-player/build
@@ -183,10 +185,11 @@ jobs:
           echo "::notice title=Patched EasyRPG Player (${{ matrix.name }})::$(head -n 1 player-version.txt)"
 
       - name: Save patched EasyRPG Player build
+        if: steps.player-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: runtime/easyrpg-player/build
-          key: player-${{ runner.os }}-${{ hashFiles('runtime/easyrpg-player/*.patch', 'runtime/easyrpg-player/build.sh') }}-${{ github.run_id }}
+          key: player-${{ runner.os }}-${{ hashFiles('runtime/easyrpg-player/*.patch', 'runtime/easyrpg-player/build.sh') }}
 
       - name: Pixel movement runtime test
         run: |
