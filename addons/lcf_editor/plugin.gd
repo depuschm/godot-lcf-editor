@@ -9,6 +9,7 @@ var dock: Control
 var main_screen: TabContainer
 var map_view: Control
 var database_view: Control
+var api: LcfEditorAPI
 
 
 func _enter_tree() -> void:
@@ -24,15 +25,33 @@ func _enter_tree() -> void:
 	main_screen.add_child(database_view)
 	EditorInterface.get_editor_main_screen().add_child(main_screen)
 
+	# The plugin API (editor_api.gd): registered before the dock opens the last project,
+	# so plugins see project_opened for it.
+	api = LcfEditorAPI.new(self, main_screen, map_view, database_view)
+	Engine.register_singleton(LcfEditorAPI.SINGLETON, api)
+
 	dock = ProjectDock.new()
 	dock.name = "LCF Project"
 	dock.map_activated.connect(_on_map_activated)
 	dock.project_opened.connect(_on_project_opened)
 	dock.database_requested.connect(_show_tab.bind(1))
 	add_control_to_dock(DOCK_SLOT_LEFT_UL, dock)
+	# Plugins enabled before this one learn about the API now; later ones find it
+	# with LcfEditorAPI.get_api() in their _enter_tree().
+	for plugin in _other_plugins():
+		if plugin.has_method("_lcf_editor_ready"):
+			plugin._lcf_editor_ready(api)
 
 
 func _exit_tree() -> void:
+	if api:
+		for plugin in _other_plugins():
+			if plugin.has_method("_lcf_editor_closing"):
+				plugin._lcf_editor_closing(api)
+		api.shutdown()
+		Engine.unregister_singleton(LcfEditorAPI.SINGLETON)
+		api.free()
+		api = null
 	LcfCommands.clear()
 	if dock:
 		remove_control_from_docks(dock)
@@ -41,6 +60,16 @@ func _exit_tree() -> void:
 	if main_screen:
 		main_screen.queue_free()
 		main_screen = null
+
+
+func _other_plugins() -> Array:
+	var out := []
+	var parent := get_parent()
+	if parent:
+		for node in parent.get_children():
+			if node is EditorPlugin and node != self:
+				out.append(node)
+	return out
 
 
 func _has_main_screen() -> bool:
@@ -87,6 +116,13 @@ func _show_tab(index: int) -> void:
 
 func _on_project_opened(project: RefCounted) -> void:
 	database_view.set_project(project)
+	if api:
+		api.set_project(project)
+
+
+## Opens a map in the Map tab (used by the API).
+func open_map(map_id: int, map_name: String) -> void:
+	_on_map_activated(map_id, map_name)
 
 
 func _on_map_activated(map_id: int, map_name: String) -> void:

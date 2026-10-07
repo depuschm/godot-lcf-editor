@@ -8,6 +8,15 @@ extends VBoxContainer
 ## places the exact tile without autotiling. On the Events layer, clicks select, create,
 ## move and open events instead.
 
+## A map was opened (or reloaded) in the view.
+signal map_shown(map_id: int)
+## Tiles or events of a map changed (including undo/redo).
+signal map_changed(map_id: int)
+## A map was saved to its file.
+signal map_saved(map_id: int)
+## The selected event on the Events layer changed (-1: none).
+signal event_selected(map_id: int, event_id: int)
+
 const TILE := 16
 const ZOOM_STEPS: Array[float] = [0.5, 1.0, 2.0, 3.0, 4.0, 6.0]
 const TilePalette := preload("res://addons/lcf_editor/tile_palette.gd")
@@ -17,7 +26,7 @@ const PAINT_HELP := "Left: paint · Right: pick tile · Middle or Space+drag: pa
 const EVENT_HELP := "Click: select event · Double-click: edit, or create on an empty cell · Drag: move · Right-click: menu · Del: delete · Ctrl+C / Ctrl+V: copy / paste"
 
 enum Tool { PENCIL, RECTANGLE, FILL, PICK }
-enum Layer { LOWER, UPPER, EVENTS }
+enum Layer { LOWER, UPPER, EVENTS, PLUGIN }
 
 var project: RefCounted  # LcfProject
 var chipset: RefCounted  # LcfChipset
@@ -68,11 +77,22 @@ var stroke_before := {}
 var stroke_after := {}
 
 # Events layer
-var selected_event := -1      # event ID
+var selected_event := -1:     # event ID
+	set(value):
+		if value != selected_event:
+			selected_event = value
+			event_selected.emit(map_id, value)
 var dragging_event := false
 var drag_cell := Vector2i(-1, -1)
 var menu_cell := Vector2i(-1, -1)
 var event_clipboard := ""     # event XML
+
+# Map tools added by plugins (LcfMapTool)
+var plugin_tools: Array = []
+var plugin_buttons := {}      # tool -> Button
+var active_tool: RefCounted
+var layer_group: ButtonGroup
+var tools_bar: HBoxContainer
 
 
 func _ready() -> void:
@@ -97,8 +117,9 @@ func _ready() -> void:
 	bar.add_child(zoom_label)
 
 	var tools := HBoxContainer.new()
+	tools_bar = tools
 	add_child(tools)
-	var layer_group := ButtonGroup.new()
+	layer_group = ButtonGroup.new()
 	for entry in [["Lower layer", Layer.LOWER], ["Upper layer", Layer.UPPER], ["Events", Layer.EVENTS]]:
 		layer_buttons.append(_choice(tools, entry[0], layer_group, _set_layer.bind(entry[1])))
 	tools.add_child(VSeparator.new())
@@ -242,6 +263,9 @@ func show_map(p_project: RefCounted, p_map_id: int, p_map_name: String) -> void:
 	_fit_view()
 	overlay.queue_redraw()
 	_update_map_status()
+	for map_tool: RefCounted in plugin_tools:
+		map_tool._map_shown(map_id)
+	map_shown.emit(map_id)
 
 
 # Every tile ID the editor can produce, so atlas cells never have to move.
@@ -288,12 +312,21 @@ func _fill_layers() -> void:
 
 
 func _set_layer(value: Layer) -> void:
+	if active_tool and value != Layer.PLUGIN:
+		var leaving := active_tool
+		active_tool = null
+		leaving._deactivated()
 	layer = value
-	var events_mode := layer == Layer.EVENTS
+	var events_mode := layer == Layer.EVENTS or layer == Layer.PLUGIN
 	palette_scroll.visible = not events_mode
 	for button in tool_buttons:
 		button.disabled = events_mode
 	status_label.text = EVENT_HELP if events_mode else PAINT_HELP
+	if layer == Layer.PLUGIN:
+		status_label.text = active_tool.help if active_tool else ""
+		upper_layer.modulate.a = 1.0
+		overlay.queue_redraw()
+		return
 	if events_mode:
 		events_toggle.button_pressed = true
 		upper_layer.modulate.a = 1.0
@@ -430,6 +463,7 @@ func _end_stroke() -> void:
 		undo_redo.add_undo_method(self, "apply_tiles", map_id, layer, cells, before)
 		undo_redo.commit_action(false)
 	_update_map_status()
+	map_changed.emit(map_id)
 
 
 ## Sets exact tiles (used by undo/redo).
@@ -438,9 +472,13 @@ func apply_tiles(p_map_id: int, which: int, cells: PackedInt32Array, ids: Packed
 	if p_map_id == map_id and not map.is_empty():
 		_show_tiles(which, cells, ids)
 	_update_map_status()
+	map_changed.emit(p_map_id)
 
 
 func _on_gui_input(event: InputEvent) -> void:
+	if layer == Layer.PLUGIN and active_tool and _forward_to_tool(event):
+		viewport_area.accept_event()
+		return
 	if event is InputEventMouseButton:
 		var cell := _cell_at(event.position)
 		match event.button_index:
@@ -500,6 +538,64 @@ func _on_gui_input(event: InputEvent) -> void:
 		if _inside(cell):
 			_paste_event(cell)
 		viewport_area.accept_event()
+
+
+# Gives a plugin tool the events it may handle (not zoom or pan). True if it used one.
+func _forward_to_tool(event: InputEvent) -> bool:
+	if event is InputEventMouseButton:
+		if event.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN, MOUSE_BUTTON_MIDDLE]:
+			return false
+		if event.button_index == MOUSE_BUTTON_LEFT and Input.is_key_pressed(KEY_SPACE):
+			return false
+	if event is InputEventMouseMotion and panning:
+		return false
+	var at: Vector2 = event.position if event is InputEventMouse else viewport_area.get_local_mouse_position()
+	var cell := _cell_at(at)
+	if event is InputEventMouseMotion:
+		_update_status(cell)
+	return active_tool._map_input(event, cell)
+
+
+## Adds a plugin's map tool (an LcfMapTool) with a button after "Events".
+func add_tool(map_tool: RefCounted) -> void:
+	if map_tool in plugin_tools:
+		return
+	plugin_tools.append(map_tool)
+	var button := _choice(tools_bar, map_tool.name, layer_group, _activate_tool.bind(map_tool))
+	button.tooltip_text = map_tool.tooltip
+	tools_bar.move_child(button, layer_buttons.back().get_index() + plugin_tools.size())
+	plugin_buttons[map_tool] = button
+	overlay.queue_redraw()
+
+
+func remove_tool(map_tool: RefCounted) -> void:
+	if not map_tool in plugin_tools:
+		return
+	if active_tool == map_tool:
+		layer_buttons[Layer.EVENTS].button_pressed = true
+		_set_layer(Layer.EVENTS)
+	plugin_tools.erase(map_tool)
+	var button: Button = plugin_buttons[map_tool]
+	plugin_buttons.erase(map_tool)
+	tools_bar.remove_child(button)
+	button.queue_free()
+	overlay.queue_redraw()
+
+
+## Material for the map's tile layers (e.g. a shader preview), or null.
+func set_map_material(material: Material) -> void:
+	lower_layer.material = material
+	upper_layer.material = material
+
+
+func _activate_tool(map_tool: RefCounted) -> void:
+	if active_tool == map_tool and layer == Layer.PLUGIN:
+		return
+	if active_tool:
+		active_tool._deactivated()
+	active_tool = map_tool
+	_set_layer(Layer.PLUGIN)
+	map_tool._activated()
 
 
 func _on_left_pressed(cell: Vector2i, exact: bool) -> void:
@@ -678,6 +774,7 @@ func _refresh_events(reload_editor: bool) -> void:
 		event_editor.reload()
 	overlay.queue_redraw()
 	_update_map_status()
+	map_changed.emit(map_id)
 
 
 # --- saving -----------------------------------------------------------------------
@@ -707,7 +804,8 @@ func save_if_safe() -> void:
 		return
 	for id: int in project.get_modified_maps():
 		if project.check_map_round_trip(id).get("identical", true) or confirmed_maps.has(id):
-			project.save_map(id, _backup_dir())
+			if project.save_map(id, _backup_dir()) == OK:
+				map_saved.emit(id)
 	_update_map_status()
 
 
@@ -728,6 +826,7 @@ func _save() -> void:
 		_update_map_status("Save failed: " + project.get_last_error(), true)
 		return
 	_update_map_status("Saved. Backup: " + project.get_last_backup().get_file())
+	map_saved.emit(map_id)
 
 
 func _on_revert_pressed() -> void:
@@ -774,6 +873,8 @@ func _draw_overlay() -> void:
 			overlay.draw_rect(r, Color(1.0, 0.85, 0.2), false, 2.0)
 			if dragging_event and drag_cell != Vector2i(chosen.x, chosen.y):
 				overlay.draw_rect(Rect2(Vector2(drag_cell) * TILE, Vector2(TILE, TILE)), Color(1.0, 0.85, 0.2), false, 1.0)
+	for map_tool: RefCounted in plugin_tools:
+		map_tool._draw_map(overlay, map_tool == active_tool and layer == Layer.PLUGIN)
 	if painting and tool == Tool.RECTANGLE and rect_start.x >= 0:
 		var a := Vector2(mini(rect_start.x, rect_end.x), mini(rect_start.y, rect_end.y)) * TILE
 		var b := Vector2(maxi(rect_start.x, rect_end.x) + 1, maxi(rect_start.y, rect_end.y) + 1) * TILE
@@ -792,6 +893,7 @@ func _zoom_by(step: int, anchor: Vector2) -> void:
 	canvas.scale = Vector2.ONE * ZOOM_STEPS[zoom_index]
 	canvas.position = anchor - world * canvas.scale.x
 	_update_zoom_label()
+	overlay.queue_redraw()  # plugin tools may draw at screen size
 
 
 func _fit_view() -> void:

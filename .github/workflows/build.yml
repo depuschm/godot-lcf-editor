@@ -83,6 +83,11 @@ jobs:
           "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_commands.gd | tee commands.log
           echo "::notice title=Event commands (${{ matrix.name }})::$(grep -c '  ok ' commands.log) checks ok, result: $(tail -n 1 commands.log)"
 
+      - name: Plugin API test
+        run: |
+          "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_plugin_api.gd | tee plugin.log
+          echo "::notice title=Plugin API (${{ matrix.name }})::$(grep -c '  ok ' plugin.log) checks ok, result: $(tail -n 1 plugin.log)"
+
       - name: Event editor test
         run: |
           "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_event_editor.gd | tee events.log
@@ -102,14 +107,20 @@ jobs:
             echo "::notice title=Event commands TestGame-$game (${{ matrix.name }})::$(grep 'command lines written' game-commands.log | sed 's/^ *ok *//'), result: $(tail -n 1 game-commands.log)"
           done
 
-      - name: Editor loads the plugin
-        run: '"../godot/${{ matrix.godot }}" --headless --path . --editor --quit'
+      - name: Editor loads the plugins
+        run: |
+          "../godot/${{ matrix.godot }}" --headless --path . --editor --quit 2>&1 | tee editor.log
+          # Godot exits with 0 even when a script fails to load; fail on that here.
+          if grep -E "SCRIPT ERROR|Parse Error" editor.log; then exit 1; fi
 
       - name: Upload addon
         uses: actions/upload-artifact@v4
         with:
           name: lcf_editor-${{ runner.os }}
-          path: addons/lcf_editor
+          # Both folders, so the artifact holds lcf_editor/ and lcf_map_notes/.
+          path: |
+            addons/lcf_editor
+            addons/lcf_map_notes
 
   release:
     # Runs for version tags (v0.1.0, ...) and for releases published on GitHub:
@@ -128,9 +139,10 @@ jobs:
       - name: Combine addon
         run: |
           mkdir -p addons
-          cp -r artifacts/lcf_editor-Linux addons/lcf_editor
-          cp artifacts/lcf_editor-Windows/bin/* addons/lcf_editor/bin/
-          ls -l addons/lcf_editor/bin
+          cp -r artifacts/lcf_editor-Linux/lcf_editor addons/lcf_editor
+          cp -r artifacts/lcf_editor-Linux/lcf_map_notes addons/lcf_map_notes
+          cp artifacts/lcf_editor-Windows/lcf_editor/bin/* addons/lcf_editor/bin/
+          ls -l addons/lcf_editor/bin addons/lcf_map_notes
           zip -r "lcf_editor-${GITHUB_REF_NAME}.zip" addons
 
       - name: Create release or attach to it

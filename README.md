@@ -4,7 +4,7 @@
 
 Godot editor for RPG Maker 2000/2003 projects (LCF format), built on [liblcf](https://github.com/EasyRPG/liblcf). Extensible through plugins, playtested with [EasyRPG Player](https://github.com/EasyRPG/Player).
 
-> **Status: early prototype.** The editor plugin opens an existing RPG Maker 2000/2003 project, lets you paint its maps, edit its events and their commands, and browse and edit its whole database inside Godot. A plugin API for the editor and Test Play come next — see the [roadmap](#roadmap). Keep backups of your projects while trying it.
+> **Status: early prototype.** The editor plugin opens an existing RPG Maker 2000/2003 project, lets you paint its maps, edit its events and their commands, and browse and edit its whole database inside Godot. Other Godot plugins can extend it ([writing plugins](#writing-plugins)). Test Play with EasyRPG Player comes next — see the [roadmap](#roadmap). Keep backups of your projects while trying it.
 
 ## Vision
 
@@ -67,9 +67,59 @@ Untouched maps also save back byte for byte: all maps of TestGame-2003, -Maniacs
 
 **Not yet:** dialogs for the less common event commands (Show Choices, pictures, move routes and others are edited as raw data), event graphics on the map, adding or removing database entries, map properties (size, chipset), RTP graphics (chipsets must be inside the project), tile animation.
 
-## Adding event commands from a plugin
+## Writing plugins
 
-Event command dialogs are generated from data. A Godot editor plugin can give any command code a dialog, or replace a built-in one, by registering a schema with `LcfCommands` (see [`command_registry.gd`](addons/lcf_editor/command_registry.gd) for every key):
+The LCF Editor is extended by ordinary Godot editor plugins. A plugin can add **map tools** (with their own button, mouse input and drawing on the map), **panels in the event editor** (per-event settings, next to the command list), **tabs** next to Map and Database, **event commands** with generated dialogs, a **material for the map** (to preview a shader), and keep its own **data with the project**. It learns about the open project and maps through signals, and uses Godot's undo/redo like any editor plugin.
+
+![The Map tab with the example plugin's “Notes” tool selected (its button follows Lower layer, Upper layer and Events, and a “Notes” tab follows Map and Database): notes pinned to the town's two doors and the villager, each with its text in a label.](docs/images/editor-plugin.png)
+
+The example plugin [`addons/lcf_map_notes`](addons/lcf_map_notes) (shown above) uses nearly every part of the API (all but the map material) and is meant to be copied: it pins notes to map cells and events (a “Notes” panel in the event editor), lists them in a tab, stores them in the project and adds a dialog for the *Shake Screen* command. It is enabled in this repository's `project.godot` and included in the release zip.
+
+**Getting the API.** While the LCF Editor is enabled, `LcfEditorAPI.get_api()` returns it. Plugins may be enabled before or after the LCF Editor, so use both entry points:
+
+```gdscript
+@tool
+extends EditorPlugin
+
+var tool := MyTool.new()  # extends LcfMapTool
+
+func _enter_tree() -> void:
+    var api := LcfEditorAPI.get_api()
+    if api:
+        _lcf_editor_ready(api)
+
+func _exit_tree() -> void:
+    var api := LcfEditorAPI.get_api()
+    if api:
+        _lcf_editor_closing(api)
+
+# Also called by the LCF Editor when it starts after this plugin.
+func _lcf_editor_ready(api: LcfEditorAPI) -> void:
+    api.add_map_tool(tool)
+    api.map_shown.connect(_on_map_shown)
+
+# Called by the LCF Editor before it goes away.
+func _lcf_editor_closing(api: LcfEditorAPI) -> void:
+    api.remove_map_tool(tool)
+    api.map_shown.disconnect(_on_map_shown)
+```
+
+**What the API offers** ([`editor_api.gd`](addons/lcf_editor/editor_api.gd), [`map_tool.gd`](addons/lcf_editor/map_tool.gd)):
+
+| | |
+|---|---|
+| Project and maps | `get_project()` (the `LcfProject`), `get_map_id()`, `get_map()`, `open_map(id)`, `get_selected_event()`, `edit_event(id)` |
+| Signals | `project_opened`, `map_shown`, `map_changed` (tiles or events, also on undo), `map_saved`, `event_selected`, `database_modified_changed` |
+| Map tools | `add_map_tool(tool)` with a subclass of `LcfMapTool`: override `_map_input(event, cell)`, `_draw_map(canvas, active)`, `_activated()`, `_deactivated()`; helpers `redraw()`, `is_on_map(cell)`, `cell_rect(cell)`, `get_zoom()` |
+| Event editor panels | `add_event_panel(title, factory)`, `remove_event_panel(title)`: the factory gets `{ project, map_id, event_id, page, editor }` for each page shown and returns a Control |
+| Tabs | `add_tab(control, title)`, `show_tab(control)`, `remove_tab(control)` |
+| Map preview | `set_map_material(material)`: a material (e.g. a shader) on the map's tile layers; `redraw_map()` |
+| Plugin data | `get_plugin_data(id, default)`, `set_plugin_data(id, data)`: JSON in `lcf-plugins/<id>.json` inside the RPG Maker project, so it travels with the game for the runtime half of a plugin (RPG Maker and EasyRPG Player ignore the folder) |
+| Event commands | `LcfCommands.register(schema)`, see below |
+
+### Event commands
+
+Event command dialogs are generated from data. A plugin can give any command code a dialog, or replace a built-in one, by registering a schema with `LcfCommands` (see [`command_registry.gd`](addons/lcf_editor/command_registry.gd) for every key):
 
 ```gdscript
 @tool
@@ -90,13 +140,14 @@ func _exit_tree() -> void:
     LcfCommands.unregister(11050)
 ```
 
-The command then appears under **Insert…**, gets its dialog and a readable line in the list. Parameter types include numbers, yes/no, choices, database references (`switch`, `variable`, `item`, `actor`, …), `map` and `event`; fields can depend on others (`"when": { 0: 1 }`), and a command can open a block (`"block": { "end": … }`). The built-in commands are described the same way, in [`builtin_commands.gd`](addons/lcf_editor/builtin_commands.gd).
+The command then appears under **Insert…**, gets its dialog and a readable line in the list. Use method callables (not lambdas) for a schema's `summary` and `sync`: the registry outlives scripts, and Godot cannot free a lambda after its script is gone. Parameter types include numbers, yes/no, choices, database references (`switch`, `variable`, `item`, `actor`, …), `map` and `event`; fields can depend on others (`"when": { 0: 1 }`), and a command can open a block (`"block": { "end": … }`). The built-in commands are described the same way, in [`builtin_commands.gd`](addons/lcf_editor/builtin_commands.gd).
 
 ## Repository layout
 
 ```
 project.godot              Open this folder in Godot 4.5+
 addons/lcf_editor/         Editor plugin (GDScript) + the GDExtension's binaries
+addons/lcf_map_notes/      Example plugin for the plugin API (map tool, event panel, tab, data, command)
 extension/                 C++ GDExtension wrapping liblcf (CMake)
 thirdparty/liblcf/         git submodule – RPG Maker 2000/2003 file formats
 thirdparty/godot-cpp/      git submodule – Godot C++ bindings
@@ -109,12 +160,12 @@ docs/                      Vision document and README images
 
 ## Download
 
-Every push is built and tested on **Windows** and **Linux** by [GitHub Actions](https://github.com/depuschm/godot-lcf-editor/actions/workflows/build.yml): the smoke test, the round-trip test on the demo and on EasyRPG's TestGame (2000, 2003, Maniacs), the event command and event editor tests, and a check that the Godot editor loads the plugin.
+Every push is built and tested on **Windows** and **Linux** by [GitHub Actions](https://github.com/depuschm/godot-lcf-editor/actions/workflows/build.yml): the smoke test, the round-trip test on the demo and on EasyRPG's TestGame (2000, 2003, Maniacs), the event command, plugin API and event editor tests, and a check that the Godot editor loads both plugins without script errors.
 
 - **Releases:** ready-to-use addon zips with Windows and Linux binaries appear under [Releases](https://github.com/depuschm/godot-lcf-editor/releases) once a version is tagged.
 - **Latest build:** open the newest successful run on the [Actions page](https://github.com/depuschm/godot-lcf-editor/actions/workflows/build.yml) and download `lcf_editor-Windows` or `lcf_editor-Linux` (needs a GitHub login).
 
-To use a download, put the `lcf_editor` folder into your Godot project's `addons/` folder (or clone this repository and copy it into `addons/lcf_editor`), then enable **LCF Editor** under *Project → Project Settings → Plugins*. macOS builds are not provided yet.
+To use a download, put the `lcf_editor` folder into your Godot project's `addons/` folder (or clone this repository and copy it into `addons/lcf_editor`), then enable **LCF Editor** under *Project → Project Settings → Plugins*. The zip also contains the example plugin `lcf_map_notes`; copy it too if you want it. macOS builds are not provided yet.
 
 ## Building
 
@@ -164,6 +215,14 @@ Checks the command descriptions (schemas), registering a plugin command, and the
 godot --headless --path . --script res://tests/test_commands.gd -- /path/to/RPG/project
 ```
 
+### Plugin API test
+
+Drives `LcfEditorAPI` with the real map and database views and the example plugin's notes: signals, tabs, plugin data in the project, a map tool's button, input and drawing, event editor panels and the map material.
+
+```bash
+godot --headless --path . --script res://tests/test_plugin_api.gd
+```
+
 ### Event editor test
 
 Drives the real map view, event editor and database view without a window, on a copy of `demo/`: creating, renaming, moving, copying and deleting events, page settings, pages, the command picker and generated dialogs, branches with and without Else, copy and paste of blocks, the undo states, and common event commands.
@@ -200,7 +259,7 @@ cmake -S tools -B build-tools && cmake --build build-tools
 | M3b | Database editing and safe saving (backups, byte-identical round trip) ✅ |
 | M4a | Event editor: events on the map, pages, page settings, command lists (raw editing), undo ✅ |
 | M4b | Data-driven dialogs for event commands, registered by plugins; block-aware editing ✅ |
-| M5 | Plugin API for the editor |
+| M5 | Plugin API for the editor: map tools, event editor panels, tabs, map material, plugin data, signals; example plugin ✅ |
 | M6 | Test Play with EasyRPG Player; runtime extension mechanism |
 | M7 | Showcase plugins: pixel-perfect movement, shader support |
 

@@ -3,6 +3,7 @@ extends AcceptDialog
 ## Editor for one map event: its name, its pages (conditions, graphic, movement,
 ## trigger) and each page's command list. Every change goes straight into the project
 ## and is reported through `event_changed`, so the map view can record it for undo.
+## Plugins add panels next to the command list (LcfEditorAPI.add_event_panel()).
 
 ## The event changed; `before` and `after` are the whole event as XML.
 signal event_changed(action: String, event_id: int, before: String, after: String)
@@ -24,6 +25,11 @@ var fields: FieldTree
 var commands: CommandList
 var status: Label
 var delete_page_button: Button
+## Tabs on the right: the command list, then plugin panels.
+var side: TabContainer
+## Plugin panels: [{ title, factory }], shared with LcfEditorAPI.
+var panels: Array = []
+var _panel_controls: Array[Control] = []
 
 
 func _init() -> void:
@@ -65,9 +71,13 @@ func _init() -> void:
 	fields.setter = _set_page_field
 	fields.edit_failed.connect(func(message: String) -> void: _status(message, true))
 	split.add_child(fields)
+	side = TabContainer.new()
+	side.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	split.add_child(side)
 	commands = CommandList.new()
+	commands.name = "Commands"
 	commands.commands_changed.connect(_on_commands_changed)
-	split.add_child(commands)
+	side.add_child(commands)
 
 	status = Label.new()
 	status.text = "Changes apply immediately; undo them with Ctrl+Z in the map."
@@ -139,7 +149,42 @@ func _show_page(index: int) -> void:
 		commands.set_commands([])
 		return
 	fields.show_node(pages[index], pages_path + PackedInt32Array([index]), ["event_commands"])
+	commands.map_id = map_id
 	commands.set_commands(project.get_map_event_commands(map_id, event_id, index))
+	refresh_panels()
+
+
+## Builds the plugin panels again for the current event and page. Each panel's factory
+## gets { project, map_id, event_id, page, editor } and returns a Control (or null).
+func refresh_panels() -> void:
+	var current := side.get_tab_title(side.current_tab) if side.get_tab_count() > 0 else ""
+	for control in _panel_controls:
+		side.remove_child(control)
+		control.queue_free()
+	_panel_controls.clear()
+	if project == null or xml == "":
+		return
+	var context := { "project": project, "map_id": map_id, "event_id": event_id, "page": page, "editor": self }
+	for panel: Dictionary in panels:
+		var factory: Callable = panel.factory
+		if not factory.is_valid():
+			continue
+		var control: Variant = factory.call(context)
+		if control is Control:
+			control.name = String(panel.title).validate_node_name()
+			side.add_child(control)
+			side.set_tab_title(side.get_tab_idx_from_control(control), panel.title)
+			_panel_controls.append(control)
+	for i in side.get_tab_count():
+		if side.get_tab_title(i) == current:
+			side.current_tab = i
+
+
+## Shows a tab on the right by its title ("Commands" or a plugin panel's title).
+func show_panel(panel_title: String) -> void:
+	for i in side.get_tab_count():
+		if side.get_tab_title(i) == panel_title:
+			side.current_tab = i
 
 
 # --- changes ----------------------------------------------------------------------
