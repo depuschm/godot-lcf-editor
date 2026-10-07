@@ -60,6 +60,19 @@ public:
 	// case-insensitively; prefers .png over .bmp over .xyz. Empty if not found.
 	String find_image(const String &folder, const String &name) const;
 
+	// Database sections in RPG Maker's order: [{ key, label, single, count }].
+	Array get_database_sections() const;
+
+	// Entries of one section: [{ index, id, name }].
+	Array get_database_entries(const String &section) const;
+
+	// One entry as liblcf XML: every field by name, nested structures as child
+	// elements, booleans as T/F, number lists space-separated. Empty on error.
+	String get_database_entry_xml(const String &section, int index) const;
+
+	// "ShowMessage", "CallCommonEvent", ... for an event command code; empty if unknown.
+	static String get_event_command_name(int code);
+
 protected:
 	static void _bind_methods();
 

@@ -33,6 +33,7 @@ add_library(lcf_editor SHARED
     src/register_types.cpp
     src/lcf_project.cpp
     src/lcf_chipset.cpp
+    src/database_sections.cpp
 )
 target_link_libraries(lcf_editor PRIVATE godot-cpp lcf)
 

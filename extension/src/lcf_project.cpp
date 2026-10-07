@@ -1,5 +1,7 @@
 #include "lcf_project.h"
 
+#include "database_sections.h"
+
 #include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/core/class_db.hpp>
 
@@ -353,6 +355,54 @@ String LcfProject::find_image(const String &folder, const String &name) const {
 	return found.empty() ? String() : to_godot(found.u8string());
 }
 
+Array LcfProject::get_database_sections() const {
+	Array result;
+	if (!db) {
+		return result;
+	}
+	for (const auto &section : lcf_db::sections()) {
+		Dictionary d;
+		d["key"] = section.key;
+		d["label"] = section.label;
+		d["single"] = section.single;
+		d["count"] = lcf_db::count(*db, section.key);
+		result.push_back(d);
+	}
+	return result;
+}
+
+Array LcfProject::get_database_entries(const String &section) const {
+	Array result;
+	if (!db) {
+		return result;
+	}
+	const std::string key = section.utf8().get_data();
+	const int n = lcf_db::count(*db, key);
+	for (int i = 0; i < n; ++i) {
+		lcf_db::Entry e;
+		if (lcf_db::entry(*db, key, i, e)) {
+			Dictionary d;
+			d["index"] = i;
+			d["id"] = e.id;
+			d["name"] = to_godot(e.name);
+			result.push_back(d);
+		}
+	}
+	return result;
+}
+
+String LcfProject::get_database_entry_xml(const String &section, int index) const {
+	if (!db) {
+		return String();
+	}
+	return to_godot(lcf_db::entry_xml(*db, section.utf8().get_data(), index));
+}
+
+String LcfProject::get_event_command_name(int code) {
+	const char *name = lcf_db::command_name(code);
+	return name ? String(name) : String();
+}
+
 void LcfProject::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("load", "project_dir"), &LcfProject::load);
 	ClassDB::bind_method(D_METHOD("is_loaded"), &LcfProject::is_loaded);
@@ -367,4 +417,8 @@ void LcfProject::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_map", "map_id"), &LcfProject::get_map);
 	ClassDB::bind_method(D_METHOD("get_chipset", "chipset_id"), &LcfProject::get_chipset);
 	ClassDB::bind_method(D_METHOD("find_image", "folder", "name"), &LcfProject::find_image);
+	ClassDB::bind_method(D_METHOD("get_database_sections"), &LcfProject::get_database_sections);
+	ClassDB::bind_method(D_METHOD("get_database_entries", "section"), &LcfProject::get_database_entries);
+	ClassDB::bind_method(D_METHOD("get_database_entry_xml", "section", "index"), &LcfProject::get_database_entry_xml);
+	ClassDB::bind_static_method("LcfProject", D_METHOD("get_event_command_name", "code"), &LcfProject::get_event_command_name);
 }

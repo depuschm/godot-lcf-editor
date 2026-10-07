@@ -164,27 +164,119 @@ int main(int argc, char **argv) {
 
 	rpg::Database db;
 	db.system.ldb_id = 2003;
-	for (const char *name : { "Hero", "Mage" }) {
-		rpg::Actor actor;
-		actor.ID = int(db.actors.size()) + 1;
-		actor.name = DBString(name);
-		db.actors.push_back(actor);
+	db.system.title_name = DBString("");
+
+	auto named = [](auto &list, const char *name) -> auto & {
+		list.emplace_back();
+		list.back().ID = int(list.size());
+		list.back().name = DBString(name);
+		return list.back();
+	};
+
+	auto &warrior = named(db.classes, "Warrior");
+	auto &wizard = named(db.classes, "Wizard");
+
+	auto &slash = named(db.skills, "Power Slash");
+	slash.description = DBString("A strong strike against one enemy.");
+	slash.sp_cost = 4;
+	auto &fire = named(db.skills, "Fire");
+	fire.description = DBString("Burns one enemy.");
+	fire.sp_cost = 6;
+	auto &heal = named(db.skills, "Heal");
+	heal.description = DBString("Restores HP of one ally.");
+	heal.sp_cost = 5;
+
+	warrior.skills.push_back({});
+	warrior.skills.back().ID = 1;
+	warrior.skills.back().level = 3;
+	warrior.skills.back().skill_id = slash.ID;
+	for (int skill : { fire.ID, heal.ID }) {
+		wizard.skills.push_back({});
+		wizard.skills.back().ID = int(wizard.skills.size());
+		wizard.skills.back().level = skill == fire.ID ? 1 : 4;
+		wizard.skills.back().skill_id = skill;
 	}
+
+	auto &potion = named(db.items, "Potion");
+	potion.type = rpg::Item::Type_medicine;
+	potion.description = DBString("Restores 50 HP.");
+	potion.price = 20;
+	auto &sword = named(db.items, "Bronze Sword");
+	sword.type = rpg::Item::Type_weapon;
+	sword.price = 120;
+	sword.atk_points1 = 8;
+	auto &staff = named(db.items, "Oak Staff");
+	staff.type = rpg::Item::Type_weapon;
+	staff.price = 90;
+	staff.spi_points1 = 6;
+
+	struct ActorSpec { const char *name; const char *title; int class_id; int weapon; };
+	for (const ActorSpec &spec : { ActorSpec{ "Hero", "Wanderer", warrior.ID, sword.ID }, ActorSpec{ "Mage", "Apprentice", wizard.ID, staff.ID } }) {
+		auto &actor = named(db.actors, spec.name);
+		actor.title = DBString(spec.title);
+		actor.class_id = spec.class_id;
+		actor.initial_equipment.weapon_id = spec.weapon;
+		actor.final_level = 50;
+	}
+
+	auto &slime = named(db.enemies, "Slime");
+	slime.max_hp = 30;
+	slime.attack = 8;
+	slime.exp = 4;
+	slime.gold = 5;
+	auto &bat = named(db.enemies, "Cave Bat");
+	bat.max_hp = 22;
+	bat.agility = 30;
+	bat.exp = 6;
+	bat.gold = 3;
+
+	auto &troop = named(db.troops, "Slime x2, Bat");
+	for (int enemy : { slime.ID, slime.ID, bat.ID }) {
+		troop.members.push_back({});
+		troop.members.back().ID = int(troop.members.size());
+		troop.members.back().enemy_id = enemy;
+		troop.members.back().x = 60 + 50 * int(troop.members.size());
+		troop.members.back().y = 100;
+	}
+
+	named(db.states, "Poison");
+	named(db.attributes, "Fire");
+	named(db.terrains, "Grassland");
+
 	rpg::Chipset chipset;
 	chipset.ID = 1;
 	chipset.name = DBString("Demo Tiles");
 	chipset.chipset_name = DBString("Demo");
 	db.chipsets.push_back(chipset);
-	for (const char *name : { "Intro done", "Door open" }) {
-		rpg::Switch sw;
-		sw.ID = int(db.switches.size()) + 1;
-		sw.name = DBString(name);
-		db.switches.push_back(sw);
-	}
-	rpg::CommonEvent common;
-	common.ID = 1;
-	common.name = DBString("Heal party");
-	db.commonevents.push_back(common);
+
+	for (const char *name : { "Intro done", "Door open" }) named(db.switches, name);
+	for (const char *name : { "Steps", "Slimes defeated" }) named(db.variables, name);
+
+	auto &common = named(db.commonevents, "Heal party");
+	auto command = [&](int code, int indent, const char *text, std::initializer_list<int32_t> params) {
+		rpg::EventCommand c;
+		c.code = code;
+		c.indent = indent;
+		c.string = DBString(text);
+		c.parameters = DBArray<int32_t>(params);
+		common.event_commands.push_back(std::move(c));
+	};
+	using Code = rpg::EventCommand::Code;
+	command(int(Code::Comment), 0, "Called by the inn keeper", {});
+	command(int(Code::ConditionalBranch), 0, "", { 0, 1, 0, 0, 0, 0 });
+	command(int(Code::ShowMessage), 1, "Welcome back!", {});
+	command(int(Code::ElseBranch), 0, "", {});
+	command(int(Code::ShowMessage), 1, "Have a good rest.", {});
+	command(int(Code::ShowMessage_2), 1, "Your party feels refreshed.", {});
+	command(int(Code::EndBranch), 0, "", {});
+	command(int(Code::FullHeal), 0, "", { 0, 0 });
+	command(int(Code::PlaySound), 0, "Heal", { 100, 100, 50 });
+	command(int(Code::ChangeGold), 0, "", { 1, 0, 10 });
+	command(int(Code::END), 0, "", {});
+
+	db.terms.encounter = DBString(" appeared!");
+	db.terms.victory = DBString("Victory!");
+	db.terms.gold = DBString("G");
 	if (!LDB_Reader::Save(dir + "/RPG_RT.ldb", db, kEncoding)) return 1;
 
 	rpg::TreeMap tree;

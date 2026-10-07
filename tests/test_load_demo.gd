@@ -65,6 +65,24 @@ func _init() -> void:
 		var atlas: Dictionary = chipset.build_atlas(lower)
 		_check(Array(lower).all(func(id: int) -> bool: return atlas.coords.has(id)), "atlas covers every tile of the map")
 
+	# Database browser data
+	var sections: Array = project.get_database_sections()
+	_check(sections.size() == 19, "database has 19 sections")
+	var actors: Array = project.get_database_entries("actors")
+	_check(actors.size() == 2 and actors[0].name == "Hero", "actors are listed by name")
+	var actor_xml: String = project.get_database_entry_xml("actors", 0)
+	_check("<name>Hero</name>" in actor_xml, "actor XML names its fields")
+	_check(project.get_event_command_name(10110) == "ShowMessage", "event command names resolve")
+	var view: Node = load("res://addons/lcf_editor/database_view.gd").new()
+	var parsed: Dictionary = view._parse(project.get_database_entry_xml("commonevents", 0))
+	_check(parsed.get("tag") == "CommonEvent", "entry XML parses into a tree")
+	var commands: Array = []
+	for child: Dictionary in parsed.get("children", []):
+		if child.tag == "event_commands":
+			commands = child.children
+	_check(commands.size() == 11, "common event has its 11 commands")
+	view.free()
+
 	failed = failed or _failures > 0
 	print("FAILED" if failed else "OK")
 	quit(1 if failed else 0)

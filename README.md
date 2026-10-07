@@ -2,7 +2,7 @@
 
 Godot editor for RPG Maker 2000/2003 projects (LCF format), built on [liblcf](https://github.com/EasyRPG/liblcf). Extensible through plugins, playtested with [EasyRPG Player](https://github.com/EasyRPG/Player).
 
-> **Status: early prototype.** The editor plugin opens an existing RPG Maker 2000/2003 project, shows its map tree and database overview, and renders its maps inside Godot. Editing comes next — see the [roadmap](#roadmap).
+> **Status: early prototype.** The editor plugin opens an existing RPG Maker 2000/2003 project, renders its maps and lets you browse its whole database inside Godot. Editing comes next — see the [roadmap](#roadmap).
 
 ## Vision
 
@@ -22,12 +22,13 @@ The full vision, the existing landscape and the options considered are in [`docs
 
 ## What works today
 
-![The Godot editor with the LCF Project dock on the left showing the demo project and its map tree, and the RPG Map screen rendering the World map: grass, a lake with shoreline, dirt roads, a stone plaza, trees and an event marker.](docs/images/editor-map.png)
+![The Godot editor with the LCF Project dock on the left showing the demo project and its map tree, and the LCF Editor screen's Map tab rendering the World map: grass, a lake with shoreline, dirt roads, a stone plaza, trees and an event marker.](docs/images/editor-map.png)
 
 - Open an RPG Maker 2000 or 2003 project folder from the **LCF Project** dock.
 - Detects engine version (2000/2003) and text encoding (from `RPG_RT.ini` or by analysing the database).
 - Shows the map tree, including areas, and basic facts per map.
-- Selecting a map opens it in the **RPG Map** screen (next to 2D, 3D and Script): lower and upper layer with the project's chipset, including ground autotiles, water with shores and deep-water edges, and event markers. Zoom with the mouse wheel, pan with the middle or right mouse button; the status line shows the tile IDs under the cursor.
+- Selecting a map opens it in the **LCF Editor** screen (next to 2D, 3D and Script), **Map** tab: lower and upper layer with the project's chipset, including ground autotiles, water with shores and deep-water edges, and event markers. Zoom with the mouse wheel, pan with the middle or right mouse button; the status line shows the tile IDs under the cursor.
+- The **Database** tab browses every section of the database (actors, classes, skills, items, enemies, troops, states, vocabulary, system, common events, switches, variables, …), read-only. Every field of the selected entry is listed, nested structures can be expanded, event commands appear by name with their indentation, and references such as `class_id` or `switch_id` show the name they point to. Fields come straight from liblcf's own description of the format, so new fields (including Maniacs and EasyRPG extensions) appear automatically.
 - Chipsets in PNG, BMP and RPG Maker's XYZ format, with palette colour 0 transparent as in RPG Maker.
 - Exposes everything to GDScript through `LcfProject` and `LcfChipset`:
 
@@ -39,11 +40,15 @@ if project.load("C:/Games/MyRpg") == OK:
     var chipset := LcfChipset.new()
     if chipset.load(file) == OK:
         var tile: Image = chipset.render_tile(map.lower[0])
+    for entry in project.get_database_entries("actors"):  # also "skills", "items", ...
+        print(entry.id, ": ", entry.name)
 ```
+
+![The Database tab: sections with entry counts on the left, the demo's common event "Heal party" selected, and its fields and eleven event commands (Comment, ConditionalBranch, ShowMessage, FullHeal, PlaySound, …) listed on the right.](docs/images/editor-database.png)
 
 The autotile and water composition (`extension/src/tile_rules.h`) is our own implementation of the chipset format; it was checked against EasyRPG Player's reference tables for every ground autotile, water combination and animation frame.
 
-**Not yet:** RTP graphics (chipsets must be inside the project), tile animation, editing.
+**Not yet:** editing and saving, RTP graphics (chipsets must be inside the project), tile animation.
 
 ## Repository layout
 
@@ -112,7 +117,8 @@ cmake -S tools -B build-tools && cmake --build build-tools
 | M0 | Evaluate EasyRPG Editor; contact the EasyRPG team about a plugin API |
 | M1 | liblcf in Godot: load a project ✅ |
 | M2 | Map view with correct chipsets and autotiles ✅ |
-| M3 | Database viewer and editor |
+| M3a | Database browser ✅ |
+| M3b | Database editing and safe saving (backups, byte-identical round trip) |
 | M4 | Event editor with data-driven command dialogs |
 | M5 | Plugin API for the editor |
 | M6 | Test Play with EasyRPG Player; runtime extension mechanism |

@@ -4,6 +4,10 @@ extends VBoxContainer
 
 ## Emitted when the user selects a map (not the project root or an area).
 signal map_activated(map_id: int, map_name: String)
+## Emitted after a project was opened successfully.
+signal project_opened(project: RefCounted)
+## Emitted when the user asks for the database.
+signal database_requested
 
 const SETTINGS_SECTION := "lcf_editor"
 const SETTINGS_KEY := "last_project"
@@ -11,6 +15,7 @@ const SETTINGS_KEY := "last_project"
 var project: RefCounted  # LcfProject, created via ClassDB so this script loads without the extension
 var dialog: EditorFileDialog
 var summary: Label
+var database_button: Button
 var tree: Tree
 var details: Label
 
@@ -26,6 +31,12 @@ func _ready() -> void:
 	summary = Label.new()
 	summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	add_child(summary)
+
+	database_button = Button.new()
+	database_button.text = "Database"
+	database_button.disabled = true
+	database_button.pressed.connect(func() -> void: database_requested.emit())
+	add_child(database_button)
 
 	tree = Tree.new()
 	tree.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -70,7 +81,9 @@ func open_project(path: String) -> void:
 	details.text = ""
 	if project.load(path) != OK:
 		summary.text = "Could not open project:\n" + project.get_last_error()
+		database_button.disabled = true
 		return
+	database_button.disabled = false
 	_settings().set_project_metadata(SETTINGS_SECTION, SETTINGS_KEY, path)
 
 	var title: String = project.get_game_title()
@@ -84,6 +97,7 @@ func open_project(path: String) -> void:
 		map_count, db.actors, db.common_events,
 	]
 	_build_tree(entries)
+	project_opened.emit(project)
 
 
 func _build_tree(entries: Array) -> void:
