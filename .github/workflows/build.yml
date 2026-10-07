@@ -1,0 +1,92 @@
+name: Build and test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  GODOT_VERSION: 4.5.1
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            godot: Godot_v4.5.1-stable_win64_console.exe
+            godot_zip: Godot_v4.5.1-stable_win64.exe.zip
+          - name: Linux
+            os: ubuntu-24.04
+            godot: Godot_v4.5.1-stable_linux.x86_64
+            godot_zip: Godot_v4.5.1-stable_linux.x86_64.zip
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install ICU (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libicu-dev
+
+      - name: Cache build folder
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: build-${{ runner.os }}-${{ hashFiles('.gitmodules', 'extension/CMakeLists.txt') }}-${{ github.sha }}
+          restore-keys: |
+            build-${{ runner.os }}-${{ hashFiles('.gitmodules', 'extension/CMakeLists.txt') }}-
+
+      - name: Configure
+        run: cmake -S extension -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Download Godot ${{ env.GODOT_VERSION }}
+        run: |
+          curl -sSLf -o godot.zip "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/${{ matrix.godot_zip }}"
+          mkdir -p ../godot && unzip -q godot.zip -d ../godot && rm godot.zip
+          chmod +x "../godot/${{ matrix.godot }}" || true
+
+      - name: Import project
+        # The very first headless import of a project with a GDExtension can abort
+        # (godot-cpp's own example does the same); the second one works.
+        run: |
+          "../godot/${{ matrix.godot }}" --headless --path . --import || true
+          "../godot/${{ matrix.godot }}" --headless --path . --import
+
+      - name: Smoke test
+        run: '"../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_load_demo.gd'
+
+      - name: Round-trip test (demo)
+        run: '"../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_roundtrip.gd'
+
+      - name: Round-trip test (EasyRPG TestGame)
+        run: |
+          git clone --depth 1 https://github.com/EasyRPG/TestGame ../TestGame
+          for game in 2000 2003 Maniac; do
+            echo "::group::TestGame-$game"
+            # pwd -W gives a Windows path under Git Bash; plain pwd elsewhere.
+            dir="$(cd ../TestGame/TestGame-$game && (pwd -W 2>/dev/null || pwd))"
+            "../godot/${{ matrix.godot }}" --headless --path . --script res://tests/test_roundtrip.gd -- "$dir"
+            echo "::endgroup::"
+          done
+
+      - name: Editor loads the plugin
+        run: '"../godot/${{ matrix.godot }}" --headless --path . --editor --quit'
+
+      - name: Upload addon
+        uses: actions/upload-artifact@v4
+        with:
+          name: lcf_editor-${{ runner.os }}
+          path: addons/lcf_editor
